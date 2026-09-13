@@ -4,15 +4,17 @@ import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ChangeEvent, useEffect, useState } from "react";
-import { useDebounce } from "usehooks-ts";
 import qs from "query-string";
 
 export const SearchInput = () => {
     const router = useRouter();
     const [value, setValue] = useState("");
-    
-    // Strange refresh issue with useDebounce
-    const debouncedValue = useDebounce(value, 500);
+    const [debouncedValue, setDebouncedValue] = useState(value);
+
+    useEffect(() => {
+        const t = setTimeout(() => setDebouncedValue(value), 500);
+        return () => clearTimeout(t);
+    }, [value]);
 
     const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
         setValue(e.target.value);

@@ -1,13 +1,7 @@
 import { api } from '@/convex/_generated/api'
-import { auth, currentUser } from '@clerk/nextjs'
+import { auth, currentUser } from '@clerk/nextjs/server'
 import { Liveblocks } from '@liveblocks/node'
 import { ConvexHttpClient } from 'convex/browser'
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!)
-
-const liveblocks = new Liveblocks({
-    secret : process.env.LIVEBLOCKS_SECRET!
-})
 
 export async function POST(request : Request) {
     const authorization = await auth();
@@ -16,6 +10,16 @@ export async function POST(request : Request) {
     if(!authorization || !user) {
         return new Response('Unauthorized', {status : 403})
     }
+
+    if (!process.env.NEXT_PUBLIC_CONVEX_URL || !process.env.LIVEBLOCKS_SECRET) {
+        return new Response('Server misconfigured', {status : 500})
+    }
+
+    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL)
+
+    const liveblocks = new Liveblocks({
+        secret : process.env.LIVEBLOCKS_SECRET
+    })
 
     const {room} = await request.json()
 

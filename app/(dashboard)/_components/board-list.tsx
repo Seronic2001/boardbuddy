@@ -1,4 +1,4 @@
-"use list";
+"use client";
 
 import { useQuery } from "convex/react";
 import { EmptyBoards } from "./empty-boards";
