@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { ClerkProvider, useAuth } from "@clerk/nextjs";
 import { ConvexProviderWithClerk } from "convex/react-clerk";
 
@@ -11,19 +10,18 @@ interface ConvexClientProviderProps {
     children: React.ReactNode;
 };
 
-export const ConvexClientProvider = ({ children }: ConvexClientProviderProps) => {
-    const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+const convex = convexUrl ? new ConvexReactClient(convexUrl) : null;
 
+export const ConvexClientProvider = ({ children }: ConvexClientProviderProps) => {
     // Allow static prerender / build without env vars (Vercel sets them at runtime).
-    if (!convexUrl) {
+    if (!convex) {
         return (
             <ClerkProvider>
                 {children}
             </ClerkProvider>
         );
     }
-
-    const [convex] = useState(() => new ConvexReactClient(convexUrl));
 
     return (
         <ClerkProvider>

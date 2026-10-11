@@ -8,6 +8,7 @@ import {
   Type,
   Undo2
 } from "lucide-react";
+import { memo } from "react";
 
 import { CanvasMode, CanvasState, LayerType } from "@/types/canvas";
 
@@ -22,7 +23,12 @@ interface ToolbarProps {
   canRedo: boolean;
 };
 
-export const Toolbar = ({
+// Dragging updates canvasState on every pointer move, but only the mode and
+// the layer type being inserted affect what the toolbar shows.
+const toolKey = (state: CanvasState) =>
+  state.mode === CanvasMode.Inserting ? `${state.mode}:${state.layerType}` : `${state.mode}`;
+
+export const Toolbar = memo(({
   canvasState,
   setCanvasState,
   undo,
@@ -122,7 +128,16 @@ export const Toolbar = ({
       </div>
     </div>
   );
-};
+}, (prev, next) => (
+  toolKey(prev.canvasState) === toolKey(next.canvasState) &&
+  prev.setCanvasState === next.setCanvasState &&
+  prev.undo === next.undo &&
+  prev.redo === next.redo &&
+  prev.canUndo === next.canUndo &&
+  prev.canRedo === next.canRedo
+));
+
+Toolbar.displayName = "Toolbar";
 
 export const ToolbarSkeleton = () => {
   return (

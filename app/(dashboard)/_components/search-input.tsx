@@ -2,34 +2,38 @@
 
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChangeEvent, useEffect, useState } from "react";
-import qs from "query-string";
 
 export const SearchInput = () => {
     const router = useRouter();
-    const [value, setValue] = useState("");
-    const [debouncedValue, setDebouncedValue] = useState(value);
-
-    useEffect(() => {
-        const t = setTimeout(() => setDebouncedValue(value), 500);
-        return () => clearTimeout(t);
-    }, [value]);
+    const searchParams = useSearchParams();
+    const [value, setValue] = useState(searchParams.get("search") ?? "");
 
     const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
         setValue(e.target.value);
     }
 
     useEffect(() => {
-        const url = qs.stringifyUrl({
-            url: "/",
-            query: { 
-                search: debouncedValue,
-            },
-        },{ skipEmptyString: true, skipNull: true })
+        const t = setTimeout(() => {
+            // Read the live URL so other params (e.g. favorites) are preserved.
+            const params = new URLSearchParams(window.location.search);
 
-        router.push(url);
-    },[debouncedValue, router]);
+            if (value === (params.get("search") ?? "")) return;
+
+            if (value) {
+                params.set("search", value);
+            } else {
+                params.delete("search");
+            }
+
+            const query = params.toString();
+
+            router.replace(query ? `/?${query}` : "/");
+        }, 500);
+
+        return () => clearTimeout(t);
+    },[value, router]);
 
   return (
     <div className="w-full relative">
@@ -37,6 +41,7 @@ export const SearchInput = () => {
       <Input
         className="w-full max-w-[516px] pl-9"
         placeholder="Search Boards"
+        value={value}
         onChange={handleChange}
       />
     </div>

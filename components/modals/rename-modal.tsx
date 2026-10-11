@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useApiMutation } from "@/hooks/use-api-mutation";
 import { api } from "@/convex/_generated/api";
+import { Id } from "@/convex/_generated/dataModel";
 
 export const RenameModal = () => {
   const { 
@@ -42,7 +43,7 @@ export const RenameModal = () => {
     e.preventDefault();
 
     mutate({
-      id: initialValues.id,
+      id: initialValues.id as Id<"boards">,
       title,
     })
       .then(() => {

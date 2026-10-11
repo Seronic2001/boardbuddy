@@ -17,8 +17,8 @@ export type Color = {
     Note,
   };
   
-  export type RectangleLayer = {
-    type: LayerType.Rectangle;
+  type BaseLayer<T extends LayerType> = {
+    type: T;
     x: number;
     y: number;
     height: number;
@@ -27,46 +27,17 @@ export type Color = {
     value?: string;
   };
   
-  export type EllipseLayer = {
-    type: LayerType.Ellipse;
-    x: number;
-    y: number;
-    height: number;
-    width: number;
-    fill: Color;
-    value?: string;
-  };
+  export type RectangleLayer = BaseLayer<LayerType.Rectangle>;
   
-  export type PathLayer = {
-    type: LayerType.Path;
-    x: number;
-    y: number;
-    height: number;
-    width: number;
-    fill: Color;
+  export type EllipseLayer = BaseLayer<LayerType.Ellipse>;
+  
+  export type PathLayer = BaseLayer<LayerType.Path> & {
     points: number[][];
-    value?: string;
   };
   
-  export type TextLayer = {
-    type: LayerType.Text;
-    x: number;
-    y: number;
-    height: number;
-    width: number;
-    fill: Color;
-    value?: string;
-  };
+  export type TextLayer = BaseLayer<LayerType.Text>;
   
-  export type NoteLayer = {
-    type: LayerType.Note;
-    x: number;
-    y: number;
-    height: number;
-    width: number;
-    fill: Color;
-    value?: string;
-  };
+  export type NoteLayer = BaseLayer<LayerType.Note>;
   
   export type Point = {
     x: number;

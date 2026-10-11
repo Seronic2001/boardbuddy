@@ -3,10 +3,11 @@
 import { useOthers, useSelf } from "@/liveblocks.config";
 import { UserAvatar } from "./user-avatar";
 import { connectionIdToColor } from "@/lib/utils";
+import { memo } from "react";
 
 const MAX_SHOWN_USERS = 2;
 
-export const Participants = () => {
+export const Participants = memo(() => {
   const users = useOthers();
   const currentUser = useSelf();
 
@@ -44,7 +45,9 @@ export const Participants = () => {
       </div>
     </div>
   );
-};
+});
+
+Participants.displayName = "Participants";
 
 export function ParticipantsSkeleton() {
   return (

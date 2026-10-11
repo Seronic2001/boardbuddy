@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
+import { requireBoard, requireIdentity, requireOrg } from "./authz";
 
 const images = [
   "/placeholders/1.svg",
@@ -21,11 +22,7 @@ export const create = mutation({
     title: v.string(),
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-
-    if (!identity) {
-      throw new Error("Unauthorized");
-    }
+    const identity = await requireOrg(ctx, args.orgId);
 
     const randomImage = images[Math.floor(Math.random() * images.length)];
 
@@ -33,7 +30,7 @@ export const create = mutation({
       title: args.title,
       orgId: args.orgId,
       authorId: identity.subject,
-      authorName: identity.name!,
+      authorName: identity.name ?? "Teammate",
       imageUrl: randomImage,
     });
 
@@ -44,26 +41,14 @@ export const create = mutation({
 export const remove = mutation({
   args: { id: v.id("boards") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
+    await requireBoard(ctx, args.id);
 
-    if (!identity) {
-      throw new Error("Unauthorized");
-    }
-
-    const userId = identity.subject;
-
-    const existingFavorite = await ctx.db
+    const favorites = await ctx.db
       .query("userFavorites")
-      .withIndex("by_user_board", (q) => 
-        q
-          .eq("userId", userId)
-          .eq("boardId", args.id)
-      )
-      .unique();
+      .withIndex("by_board", (q) => q.eq("boardId", args.id))
+      .collect();
 
-    if (existingFavorite) {
-      await ctx.db.delete(existingFavorite._id);
-    }
+    await Promise.all(favorites.map((favorite) => ctx.db.delete(favorite._id)));
 
     await ctx.db.delete(args.id);
   },
@@ -72,11 +57,7 @@ export const remove = mutation({
 export const update = mutation({
   args: { id: v.id("boards"), title: v.string() },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-
-    if (!identity) {
-      throw new Error("Unauthorized");
-    }
+    await requireBoard(ctx, args.id);
 
     const title = args.title.trim();
 
@@ -89,7 +70,7 @@ export const update = mutation({
     }
 
     const board = await ctx.db.patch(args.id, {
-      title: args.title,
+      title,
     });
 
     return board;
@@ -97,25 +78,15 @@ export const update = mutation({
 });
 
 export const favorite = mutation({
-  args: { id: v.id("boards"), orgId: v.string() },
+  args: { id: v.id("boards") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-
-    if (!identity) {
-      throw new Error("Unauthorized");
-    }
-
-    const board = await ctx.db.get(args.id);
-
-    if (!board) {
-      throw new Error("Board not found");
-    }
+    const { board, identity } = await requireBoard(ctx, args.id);
 
     const userId = identity.subject;
 
     const existingFavorite = await ctx.db
       .query("userFavorites")
-      .withIndex("by_user_board", (q) => 
+      .withIndex("by_user_board", (q) =>
         q
           .eq("userId", userId)
           .eq("boardId", board._id)
@@ -129,7 +100,7 @@ export const favorite = mutation({
     await ctx.db.insert("userFavorites", {
       userId,
       boardId: board._id,
-      orgId: args.orgId,
+      orgId: board.orgId,
     });
 
     return board;
@@ -140,23 +111,13 @@ export const favorite = mutation({
 export const unfavorite = mutation({
   args: { id: v.id("boards") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-
-    if (!identity) {
-      throw new Error("Unauthorized");
-    }
-
-    const board = await ctx.db.get(args.id);
-
-    if (!board) {
-      throw new Error("Board not found");
-    }
+    const { board, identity } = await requireBoard(ctx, args.id);
 
     const userId = identity.subject;
 
     const existingFavorite = await ctx.db
       .query("userFavorites")
-      .withIndex("by_user_board", (q) => 
+      .withIndex("by_user_board", (q) =>
         q
           .eq("userId", userId)
           .eq("boardId", board._id)
@@ -173,10 +134,19 @@ export const unfavorite = mutation({
   },
 });
 
+// Returns null (rather than throwing) for malformed ids, deleted boards and
+// boards of another organization, so callers can treat them all as "not found".
 export const get = query({
-  args: { id: v.id("boards") },
+  args: { id: v.string() },
   handler: async (ctx, args) => {
-    const board = ctx.db.get(args.id);
+    const identity = await requireIdentity(ctx);
+
+    const id = ctx.db.normalizeId("boards", args.id);
+    const board = id && await ctx.db.get(id);
+
+    if (!board || identity.org_id !== board.orgId) {
+      return null;
+    }
 
     return board;
   },

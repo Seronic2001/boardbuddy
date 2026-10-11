@@ -4,7 +4,6 @@ import { Actions } from "@/components/actions";
 import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { api } from "@/convex/_generated/api";
-import { Id } from "@/convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { useRenameModal } from "@/store/use-rename-modal";
 import { useQuery } from "convex/react";
@@ -12,6 +11,8 @@ import { Menu } from "lucide-react";
 import { Poppins } from "next/font/google";
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { memo, useEffect } from "react";
 
 interface InfoProps {
   boardId: string;
@@ -31,11 +32,17 @@ const font = Poppins({
   weight: ["600"],
 })
 
-export const Info = ({
+export const Info = memo(({
   boardId,
 } : InfoProps) => {
-  const data = useQuery(api.board.get, { id: boardId as Id<"boards">})
+  const router = useRouter();
+  const data = useQuery(api.board.get, { id: boardId })
   const { onOpen} = useRenameModal();
+
+  // The board was deleted, never existed or belongs to another organization.
+  useEffect(() => {
+    if (data === null) router.replace("/");
+  }, [data, router]);
 
   if(!data) return <InfoSkeleton/>;
 
@@ -70,7 +77,9 @@ export const Info = ({
       </Actions>
     </div>
   );
-};
+});
+
+Info.displayName = "Info";
 
 export function InfoSkeleton() {
   return (

@@ -1,7 +1,7 @@
 "use client";
 
 import { nanoid } from "nanoid";
-import { useCallback, useMemo, useState, useEffect } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { LiveObject } from "@liveblocks/client";
 
 import { 
@@ -44,6 +44,8 @@ import { SelectionTools } from "./selection-tools";
 import { CursorPresence } from "./cursor-presence";
 
 const MAX_LAYERS = 100;
+// Pen points closer than this (in px) to the previous one are dropped.
+const MIN_PEN_POINT_DISTANCE = 2;
 
 interface CanvasProps {
   boardId: string;
@@ -59,6 +61,13 @@ export const Canvas = ({
     mode: CanvasMode.None,
   });
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0 });
+  // Lets onLayerPointerDown read the camera without changing identity on every
+  // pan, which would re-render every layer.
+  const cameraRef = useRef(camera);
+
+  useEffect(() => {
+    cameraRef.current = camera;
+  }, [camera]);
   const [lastUsedColor, setLastUsedColor] = useState<Color>({
     r: 0,
     g: 0,
@@ -254,14 +263,15 @@ export const Canvas = ({
       return;
     }
 
+    // The whole draft is re-broadcast on every change, so keep it sparse.
+    const [lastX, lastY] = pencilDraft[pencilDraft.length - 1];
+
+    if (Math.hypot(point.x - lastX, point.y - lastY) < MIN_PEN_POINT_DISTANCE) {
+      return;
+    }
+
     setMyPresence({
-      cursor: point,
-      pencilDraft:
-        pencilDraft.length === 1 &&
-        pencilDraft[0][0] === point.x &&
-        pencilDraft[0][1] === point.y
-          ? pencilDraft
-          : [...pencilDraft, [point.x, point.y, e.pressure]],
+      pencilDraft: [...pencilDraft, [point.x, point.y, e.pressure]],
     });
   }, [canvasState.mode]);
 
@@ -388,7 +398,7 @@ export const Canvas = ({
     history.pause();
     e.stopPropagation();
 
-    const point = pointerEventToCanvasPoint(e, camera);
+    const point = pointerEventToCanvasPoint(e, cameraRef.current);
 
     if (!self.presence.selection.includes(layerId)) {
       setMyPresence({ selection: [layerId] }, { addToHistory: true });
@@ -397,7 +407,6 @@ export const Canvas = ({
   }, 
   [
     setCanvasState,
-    camera,
     history,
     canvasState.mode,
   ]);
@@ -422,19 +431,34 @@ export const Canvas = ({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      switch (e.key) {
-        // case "Backspace":
-        //   deleteLayers();
-        //   break;
+      const target = e.target as HTMLElement | null;
+
+      // Leave typing (and the browser's own undo) alone inside text fields.
+      if (
+        target?.isContentEditable ||
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA"
+      ) {
+        return;
+      }
+
+      // e.key is "Z" rather than "z" while Shift is held.
+      switch (e.key.toLowerCase()) {
+        case "backspace":
+        case "delete":
+          deleteLayers();
+          break;
         case "z": {
           if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+
             if (e.shiftKey) {
               history.redo();
             } else {
               history.undo();
             }
-            break;
           }
+          break;
         }
       }
     }
@@ -469,8 +493,12 @@ export const Canvas = ({
         onWheel={onWheel}
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
+        // Capture the pointer so a drag that ends outside the canvas (over the
+        // toolbar, or outside the window) still delivers its pointerup here.
+        onPointerDownCapture={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
       >
         <g
           style={{

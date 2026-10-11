@@ -11,16 +11,16 @@ import { Actions } from "@/components/actions";
 import { MoreHorizontal } from "lucide-react";
 import { useApiMutation } from "@/hooks/use-api-mutation";
 import { api } from "@/convex/_generated/api";
+import { Id } from "@/convex/_generated/dataModel";
 import { toast } from "sonner";
 
 interface BoardCardProps {
-  id: string;
+  id: Id<"boards">;
   title: string;
   imageUrl: string;
   authorId: string;
   authorName: string;
   createdAt: number;
-  orgId: string;
   isFavorite: boolean;
 }
 
@@ -31,7 +31,6 @@ export const BoardCard = ({
   authorId,
   authorName,
   createdAt,
-  orgId,
   isFavorite,
 }: BoardCardProps) => {
   const { userId } = useAuth();
@@ -46,7 +45,7 @@ export const BoardCard = ({
       onUnfavorite({ id })
       .catch(() => toast.error("Failed to unfavorite board. Please try again."));    
     } else {
-      onFavorite({ id , orgId})
+      onFavorite({ id })
       .catch(() => toast.error("Failed to favorite board. Please try again."));
     }
   }

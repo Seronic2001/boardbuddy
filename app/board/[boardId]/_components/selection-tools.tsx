@@ -17,6 +17,9 @@ interface SelectionToolsProps {
   setLastUsedColor: (color: Color) => void;
 };
 
+const selectedIndices = (layerIds: readonly string[], selection: string[]) =>
+  layerIds.flatMap((id, index) => selection.includes(id) ? [index] : []);
+
 export const SelectionTools = memo(({
   camera,
   setLastUsedColor,
@@ -27,15 +30,8 @@ export const SelectionTools = memo(({
     { storage }
   ) => {
     const liveLayerIds = storage.get("layerIds");
-    const indices: number[] = [];
-
     const arr = liveLayerIds.toImmutable();
-
-    for (let i = 0; i < arr.length; i++) {
-      if (selection.includes(arr[i])) {
-        indices.push(i);
-      }
-    }
+    const indices = selectedIndices(arr, selection);
 
     for (let i = indices.length - 1; i >= 0; i--) {
       liveLayerIds.move(
@@ -49,15 +45,7 @@ export const SelectionTools = memo(({
     { storage }
   ) => {
     const liveLayerIds = storage.get("layerIds");
-    const indices: number[] = [];
-
-    const arr = liveLayerIds.toImmutable();
-
-    for (let i = 0; i < arr.length; i++) {
-      if (selection.includes(arr[i])) {
-        indices.push(i);
-      }
-    }
+    const indices = selectedIndices(liveLayerIds.toImmutable(), selection);
 
     for (let i = 0; i < indices.length; i++) {
       liveLayerIds.move(indices[i], i);

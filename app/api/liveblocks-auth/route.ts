@@ -7,7 +7,7 @@ export async function POST(request : Request) {
     const authorization = await auth();
     const user = await currentUser();
 
-    if(!authorization || !user) {
+    if(!user || !authorization.orgId) {
         return new Response('Unauthorized', {status : 403})
     }
 
@@ -15,19 +15,26 @@ export async function POST(request : Request) {
         return new Response('Server misconfigured', {status : 500})
     }
 
+    const { room } = await request.json().catch(() => ({}))
+    const token = await authorization.getToken({ template : "convex" })
+
+    if(typeof room !== "string" || !token) {
+        return new Response('Unauthorized', {status : 403})
+    }
+
     const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL)
+    convex.setAuth(token)
 
     const liveblocks = new Liveblocks({
         secret : process.env.LIVEBLOCKS_SECRET
     })
 
-    const {room} = await request.json()
-
+    // Convex only returns the board to members of its organization.
     const board = await convex.query(api.board.get, { id : room });
 
-    if(board?.orgId !== authorization.orgId) {
+    if(!board || board.orgId !== authorization.orgId) {
         return new Response('Unauthorized', {status : 403})
-    }                   
+    }
 
     const userInfo = {
         name : user.firstName || "Teammate",
@@ -38,10 +45,8 @@ export async function POST(request : Request) {
         userInfo
     })
 
-    if(room) {
-        session.allow(room, session.FULL_ACCESS)
-    }
-    
+    session.allow(room, session.FULL_ACCESS)
+
     const { status, body } = await session.authorize();
 
     return new Response(body, {status})
