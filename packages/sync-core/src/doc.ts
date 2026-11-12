@@ -76,38 +76,74 @@ export function assertValidOp(op: Op): void {
  * check `next !== prev` to see whether anything changed.
  */
 export function apply(doc: Doc, op: Op): Doc {
-  assertValidOp(op);
   const prev = doc.layers.get(op.layer);
-  let record: LayerRecord = prev ?? { id: op.layer, fields: {} };
-
-  switch (op.kind) {
-    case "create":
-      for (const [field, v] of Object.entries(op.fields)) {
-        record = writeField(record, field, v, op.ts);
-      }
-      record = writeField(record, DELETED_FIELD, false, op.ts);
-      break;
-    case "set":
-      record = writeField(record, op.field, op.v, op.ts);
-      break;
-    case "delete":
-      record = writeField(record, DELETED_FIELD, true, op.ts);
-      break;
-    case "restore":
-      record = writeField(record, DELETED_FIELD, false, op.ts);
-      break;
-  }
-
+  const record = applyToRecord(prev, op);
   if (record === prev) return doc;
   const layers = new Map(doc.layers);
   layers.set(op.layer, record);
   return { layers };
 }
 
+/** Same result as folding apply(), but copies the layer map at most once per batch. */
 export function applyAll(doc: Doc, ops: Iterable<Op>): Doc {
-  let next = doc;
-  for (const op of ops) next = apply(next, op);
-  return next;
+  let layers: Map<string, LayerRecord> | null = null;
+  for (const op of ops) {
+    const prev = (layers ?? doc.layers).get(op.layer);
+    const record = applyToRecord(prev, op);
+    if (record === prev) continue;
+    layers ??= new Map(doc.layers);
+    layers.set(op.layer, record);
+  }
+  return layers ? { layers } : doc;
+}
+
+function applyToRecord(prev: LayerRecord | undefined, op: Op): LayerRecord {
+  assertValidOp(op);
+  let record: LayerRecord = prev ?? { id: op.layer, fields: {} };
+  switch (op.kind) {
+    case "create":
+      for (const [field, v] of Object.entries(op.fields)) {
+        record = writeField(record, field, v, op.ts);
+      }
+      return writeField(record, DELETED_FIELD, false, op.ts);
+    case "set":
+      return writeField(record, op.field, op.v, op.ts);
+    case "delete":
+      return writeField(record, DELETED_FIELD, true, op.ts);
+    case "restore":
+      return writeField(record, DELETED_FIELD, false, op.ts);
+  }
+}
+
+/**
+ * Join of two replicas: every register takes the newer write. Commutative, idempotent and
+ * associative like apply(). Used to fold a server snapshot into a client copy without
+ * losing the client's unacknowledged local edits.
+ */
+export function mergeDocs(doc: Doc, other: Doc): Doc {
+  let layers: Map<string, LayerRecord> | null = null;
+  for (const [id, theirs] of other.layers) {
+    const ours = (layers ?? doc.layers).get(id);
+    let record: LayerRecord = ours ?? { id, fields: {} };
+    for (const [field, fv] of Object.entries(theirs.fields)) {
+      record = writeField(record, field, fv.v, fv.ts);
+    }
+    if (record === ours) continue;
+    layers ??= new Map(doc.layers);
+    layers.set(id, record);
+  }
+  return layers ? { layers } : doc;
+}
+
+/** JSON form of a Doc (tombstones and timestamps included), for snapshots on the wire and on disk. */
+export type DocJSON = LayerRecord[];
+
+export function docToJSON(doc: Doc): DocJSON {
+  return [...doc.layers.values()];
+}
+
+export function docFromJSON(json: DocJSON): Doc {
+  return { layers: new Map(json.map((record) => [record.id, record])) };
 }
 
 function writeField(record: LayerRecord, field: string, v: Json, ts: HLC): LayerRecord {

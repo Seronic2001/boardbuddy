@@ -3,3 +3,6 @@ export * from "./doc";
 export * from "./zorder";
 export * from "./history";
 export * from "./replica";
+export * from "./protocol";
+export * from "./room";
+export * from "./client";

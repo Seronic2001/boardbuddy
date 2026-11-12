@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "eslint .",
     "test:core": "npm run test -w @boardbuddy/sync-core",
-    "typecheck:core": "npm run typecheck -w @boardbuddy/sync-core"
+    "typecheck:core": "npm run typecheck -w @boardbuddy/sync-core",
+    "sim": "npm run sim -w @boardbuddy/sync-core --"
   },
   "engines": {
     "node": ">=20.9.0"

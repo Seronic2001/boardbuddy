@@ -1,5 +1,5 @@
-import { apply, applyAll, emptyDoc, readLayer, type Doc, type Json, type Op } from "./doc";
-import { Clock, ClockDriftError, type ClockOptions } from "./hlc";
+import { apply, applyAll, emptyDoc, mergeDocs, readLayer, type Doc, type Json, type Op } from "./doc";
+import { Clock, ClockDriftError, compareHLC, type ClockOptions, type HLC } from "./hlc";
 import { History, type HistoryOptions } from "./history";
 
 /**
@@ -52,10 +52,10 @@ export class Replica {
       this.current = apply(this.current, op);
       ops.push(op);
     };
-    const replica = this;
+    const current = () => this.current;
     const tx: Tx = {
       get doc() {
-        return replica.current;
+        return current();
       },
       read: (layer) => readLayer(this.current, layer),
       create: (layer, fields) => emit({ kind: "create", layer, fields, ts: this.clock.tick() }),
@@ -80,16 +80,25 @@ export class Replica {
 
   /** Apply ops from other clients (or our own echoes; applying them twice is harmless). */
   receive(ops: readonly Op[]): void {
-    for (const op of ops) {
-      try {
-        this.clock.receive(op.ts);
-      } catch (err) {
-        // A skewed client must not drag our clock forward, but its op still merges so that
-        // we converge with everyone else. The server rejects extreme skew before relaying.
-        if (!(err instanceof ClockDriftError)) throw err;
+    for (const op of ops) this.observe(op.ts);
+    const next = applyAll(this.current, ops);
+    if (next !== this.current) {
+      this.current = next;
+      this.notify();
+    }
+  }
+
+  /** Fold in a full document (a server snapshot). Local edits not yet in it are kept. */
+  merge(doc: Doc): void {
+    // Advance the clock past everything in the snapshot, so our next edit beats what we see.
+    let newest: HLC | undefined;
+    for (const record of doc.layers.values()) {
+      for (const fv of Object.values(record.fields)) {
+        if (!newest || compareHLC(fv.ts, newest) > 0) newest = fv.ts;
       }
     }
-    const next = applyAll(this.current, ops);
+    if (newest) this.observe(newest);
+    const next = mergeDocs(this.current, doc);
     if (next !== this.current) {
       this.current = next;
       this.notify();
@@ -110,6 +119,16 @@ export class Replica {
       this.notify();
     }
     return ops;
+  }
+
+  private observe(ts: HLC): void {
+    try {
+      this.clock.receive(ts);
+    } catch (err) {
+      // A skewed client must not drag our clock forward, but its op still merges so that
+      // we converge with everyone else. The server rejects extreme skew before relaying.
+      if (!(err instanceof ClockDriftError)) throw err;
+    }
   }
 
   private notify(): void {
