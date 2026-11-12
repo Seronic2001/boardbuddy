@@ -50,6 +50,11 @@ export type RoomOptions = {
   snapshotEvery?: number;
   /** Reject a batch outright above this size (wire-level DoS guard). */
   maxBatch?: number;
+  /**
+   * Extra per-op checks (authorship, clock skew, layer cap). Return an error message to
+   * reject. Rejected ops still use up their cseq, so the client queue keeps moving.
+   */
+  validate?: (op: Op, client: string, committed: Doc) => string | null;
 };
 
 type Rejection = { client: string; cseq: number; message: string };
@@ -74,11 +79,13 @@ export class Room {
   private readonly catchupWindow: number;
   private readonly snapshotEvery: number;
   private readonly maxBatch: number;
+  private readonly validate: RoomOptions["validate"];
 
   constructor(state: DurableState = { entries: [], cseqs: {} }, options: RoomOptions = {}) {
     this.catchupWindow = options.catchupWindow ?? 2_000;
     this.snapshotEvery = options.snapshotEvery ?? 500;
     this.maxBatch = options.maxBatch ?? 1_000;
+    this.validate = options.validate;
 
     const base = state.snapshot ? docFromJSON(state.snapshot.doc) : emptyDoc();
     this.snapshotSeq = state.snapshot?.seq ?? 0;
@@ -216,6 +223,8 @@ export class Room {
       accepted = cseq;
       try {
         assertValidOp(op);
+        const problem = this.validate?.(op, client, this.doc);
+        if (problem !== null && problem !== undefined) throw new Error(problem);
         this.buffer.push({ seq: this.nextSeq++, client, cseq, op });
       } catch (err) {
         this.rejections.push({ client, cseq, message: (err as Error).message });

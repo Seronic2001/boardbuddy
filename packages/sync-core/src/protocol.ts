@@ -38,3 +38,67 @@ export type ServerMessage =
   /** Committed ops; `batch[i]` has seq `seq + i`. Echoed to the author too. */
   | { readonly t: "ops"; readonly seq: number; readonly batch: readonly Op[] }
   | { readonly t: "error"; readonly code: "INVALID_OP"; readonly cseq: number; readonly message: string };
+
+// ---------------------------------------------------------------------------------------
+// Transport layer (WebSocket). Wraps the sync messages above with auth and presence.
+// ---------------------------------------------------------------------------------------
+
+export type PresenceData = { readonly [key: string]: unknown };
+
+export type PresenceUser = {
+  readonly userId: string;
+  readonly name: string;
+  readonly picture?: string;
+};
+
+export type PresenceEntry = {
+  /** Connection key `${userId}~${tabId}`, stable across reconnects of the same tab. */
+  readonly id: string;
+  readonly user: PresenceUser;
+  readonly data: PresenceData;
+};
+
+export type TransportClientMessage =
+  /**
+   * First message on a socket must carry `token` and `tab`. Later hellos are resync
+   * heartbeats; their token is ignored.
+   */
+  | {
+      readonly t: "hello";
+      readonly token?: string;
+      readonly tab?: string;
+      readonly lastSeq: number;
+      readonly pending: readonly PendingOp[];
+    }
+  | { readonly t: "ops"; readonly batch: readonly PendingOp[] }
+  /** Partial update, merged into this connection's presence. */
+  | { readonly t: "presence"; readonly data: PresenceData }
+  /** Fresh token before the current one expires. */
+  | { readonly t: "reauth"; readonly token: string };
+
+export type FatalCode =
+  | "UNAUTHORIZED"
+  | "TOKEN_EXPIRED"
+  | "BAD_MESSAGE"
+  | "ROOM_UNAVAILABLE"
+  | "REPLACED";
+
+export type TransportServerMessage =
+  | ServerMessage
+  /** Sent once after a successful first hello. `self` is the id ops must be authored with. */
+  | { readonly t: "presence-state"; readonly self: string; readonly others: readonly PresenceEntry[] }
+  | { readonly t: "presence-join"; readonly entry: PresenceEntry }
+  | { readonly t: "presence"; readonly id: string; readonly data: PresenceData }
+  | { readonly t: "presence-leave"; readonly id: string }
+  | { readonly t: "read-only"; readonly cseq: number }
+  /** The server closes the socket right after this. */
+  | { readonly t: "fatal"; readonly code: FatalCode; readonly message: string };
+
+/** Close codes used by the sync server (4000–4999 are application-defined). */
+export const CloseCode = {
+  Unauthorized: 4001,
+  TokenExpired: 4002,
+  BadMessage: 4003,
+  RoomUnavailable: 4004,
+  Replaced: 4005,
+} as const;
