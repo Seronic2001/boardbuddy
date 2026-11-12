@@ -44,7 +44,11 @@ function points(v: Json | undefined): number[][] {
  * expected shapes instead of trusted (the server only checks they are bounded JSON).
  */
 export function recordToLayer(record: LayerRecord): Layer {
-  const f = (name: string) => record.fields[name]?.v;
+  return plainToLayer((name) => record.fields[name]?.v);
+}
+
+/** Same coercion for a plain object, e.g. a layer exported from Liveblocks. */
+export function plainToLayer(f: (name: string) => Json | undefined): Layer {
   const type = num(f("type"), LayerType.Rectangle) as LayerType;
   const base = {
     x: num(f("x")),

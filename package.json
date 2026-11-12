@@ -19,7 +19,8 @@
     "test:server": "npm run test -w @boardbuddy/sync-server",
     "test:app": "vitest run",
     "test": "npm run test:app && npm run test --workspaces",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "sync:migrate-liveblocks": "tsx --env-file-if-exists=.env.local scripts/migrate-liveblocks.ts"
   },
   "engines": {
     "node": ">=20.9.0"
