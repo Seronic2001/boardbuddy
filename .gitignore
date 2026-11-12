@@ -43,3 +43,6 @@ packages/*/.env
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# sync server bundle
+packages/sync-server/dist/
