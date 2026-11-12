@@ -6,6 +6,7 @@ import { Room } from "@/components/room";
 import { e2eTokenFetcher } from "@/lib/sync/auth";
 import { Canvas } from "@/app/board/[boardId]/_components/canvas";
 import { Loading } from "@/app/board/[boardId]/_components/loading";
+import { E2eProbe } from "./e2e-probe";
 
 interface E2eBoardProps {
     boardId: string;
@@ -18,6 +19,7 @@ export const E2eBoard = ({ boardId, user }: E2eBoardProps) => {
 
     return (
         <Room roomId={boardId} fallback={<Loading />} backend="buddysync" authenticate={authenticate}>
+            <E2eProbe />
             <Canvas
                 boardId={boardId}
                 header={

@@ -18,7 +18,8 @@
     "sync:migrate": "npm run migrate -w @boardbuddy/sync-server",
     "test:server": "npm run test -w @boardbuddy/sync-server",
     "test:app": "vitest run",
-    "test": "npm run test:app && npm run test --workspaces"
+    "test": "npm run test:app && npm run test --workspaces",
+    "test:e2e": "playwright test"
   },
   "engines": {
     "node": ">=20.9.0"
@@ -55,6 +56,7 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^22",

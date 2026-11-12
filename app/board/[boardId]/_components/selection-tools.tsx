@@ -91,6 +91,7 @@ export const SelectionTools = memo(({
       <div className="flex flex-col gap-y-0.5">
         <Hint label="Bring to front">
           <Button
+            aria-label="Bring to front"
             onClick={moveToFront}
             variant="board"
             size="icon"
@@ -100,6 +101,7 @@ export const SelectionTools = memo(({
         </Hint>
         <Hint label="Send to back" side="bottom">
           <Button
+            aria-label="Send to back"
             onClick={moveToBack}
             variant="board"
             size="icon"
@@ -113,6 +115,7 @@ export const SelectionTools = memo(({
           <Button
             variant="board"
             size="icon"
+            aria-label="Delete"
             onClick={deleteLayers}
           >
             <Trash2 />

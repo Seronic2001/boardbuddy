@@ -37,3 +37,9 @@ next-env.d.ts
 
 # sync server env
 packages/*/.env
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
