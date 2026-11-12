@@ -6,7 +6,7 @@ import { ReactNode, useEffect, useMemo, useState } from "react";
 
 import { BuddySyncConnection } from "@boardbuddy/sync-client";
 import { RoomProvider, useRoom, useSelf, useStorage } from "@/liveblocks.config";
-import { fetchSyncToken } from "@/lib/sync/auth";
+import { fetchSyncToken, type Authenticate } from "@/lib/sync/auth";
 import { BuddySyncBackend } from "@/lib/sync/buddysync-backend";
 import { LiveblocksBackend } from "@/lib/sync/liveblocks-backend";
 import { SyncBackendProvider } from "@/lib/sync";
@@ -19,18 +19,22 @@ interface RoomProps {
     roomId: string;
     fallback: NonNullable<ReactNode> | null;
     backend: SyncBackendKind;
+    /** BuddySync only: where room tokens come from. Defaults to /api/sync-auth (Clerk). */
+    authenticate?: Authenticate;
 }
 
-export const Room = ({ children, roomId, fallback, backend }: RoomProps) =>
+export const Room = ({ children, roomId, fallback, backend, authenticate }: RoomProps) =>
     backend === "buddysync" ? (
-        <BuddySyncRoom roomId={roomId} fallback={fallback}>{children}</BuddySyncRoom>
+        <BuddySyncRoom roomId={roomId} fallback={fallback} authenticate={authenticate}>
+            {children}
+        </BuddySyncRoom>
     ) : (
         <LiveblocksRoom roomId={roomId} fallback={fallback}>{children}</LiveblocksRoom>
     );
 
 // ---- Liveblocks (rollback path) --------------------------------------------------------
 
-const LiveblocksRoom = ({ children, roomId, fallback }: Omit<RoomProps, "backend">) => (
+const LiveblocksRoom = ({ children, roomId, fallback }: Omit<RoomProps, "backend" | "authenticate">) => (
     <RoomProvider
         id={roomId}
         initialPresence={INITIAL_PRESENCE}
@@ -56,7 +60,12 @@ const LiveblocksBridge = ({ children }: { children: ReactNode }) => {
 
 // ---- BuddySync -------------------------------------------------------------------------
 
-const BuddySyncRoom = ({ children, roomId, fallback }: Omit<RoomProps, "backend">) => {
+const BuddySyncRoom = ({
+    children,
+    roomId,
+    fallback,
+    authenticate = fetchSyncToken,
+}: Omit<RoomProps, "backend">) => {
     const [backend, setBackend] = useState<BuddySyncBackend | null>(null);
     const [denied, setDenied] = useState(false);
 
@@ -65,7 +74,7 @@ const BuddySyncRoom = ({ children, roomId, fallback }: Omit<RoomProps, "backend"
         // identity (guarded by a Web Lock), so offline edits survive closing the tab.
         const connection = new BuddySyncConnection({
             boardId: roomId,
-            authenticate: fetchSyncToken,
+            authenticate,
         });
         const offLoaded = connection.on("loaded", () => setBackend(new BuddySyncBackend(connection)));
         const offStatus = connection.on("status", () => {
@@ -85,7 +94,7 @@ const BuddySyncRoom = ({ children, roomId, fallback }: Omit<RoomProps, "backend"
             setBackend(null);
             setDenied(false);
         };
-    }, [roomId]);
+    }, [roomId, authenticate]);
 
     if (denied) {
         return (

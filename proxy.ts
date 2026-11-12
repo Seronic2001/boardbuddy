@@ -4,6 +4,9 @@ const isPublicRoute = createRouteMatcher([
   "/sign-in(.*)",
   "/sign-up(.*)",
   "/api/liveblocks-auth(.*)",
+  // Test-only pages and token route; they 404 unless E2E_TEST_AUTH=1 outside production.
+  "/e2e(.*)",
+  "/api/e2e(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

@@ -1,20 +1,12 @@
 import { api } from '@/convex/_generated/api'
+import { issueRoomToken } from '@/lib/sync/token'
 import { auth, currentUser } from '@clerk/nextjs/server'
 import { ConvexHttpClient } from 'convex/browser'
-import { importPKCS8, SignJWT, type CryptoKey } from 'jose'
 
 // Room tokens for the BuddySync server. Same authorization as /api/liveblocks-auth:
 // signed-in Clerk user, active organization, and the board must belong to that organization
 // (Convex is queried with the caller's own token). The sync server only verifies the
 // signature with the public key.
-
-const TOKEN_TTL_SECONDS = 5 * 60
-
-let signingKey: Promise<CryptoKey> | null = null
-function getSigningKey(pem: string) {
-    signingKey ??= importPKCS8(pem.replace(/\\n/g, '\n'), 'EdDSA')
-    return signingKey
-}
 
 export async function POST(request : Request) {
     const authorization = await auth();
@@ -47,32 +39,18 @@ export async function POST(request : Request) {
         return new Response('Unauthorized', {status : 403})
     }
 
-    const expiresAt = Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS
-    const roomToken = await new SignJWT({
-        boardId : room,
-        orgId : authorization.orgId,
-        // Every org member can edit today; viewers are supported by the sync server.
-        role : "editor",
-        name : user.firstName || "Teammate",
-        picture : user.imageUrl,
-    })
-        .setProtectedHeader({ alg : 'EdDSA' })
-        .setSubject(user.id)
-        .setIssuer('boardbuddy')
-        .setAudience('buddysync')
-        .setIssuedAt()
-        .setExpirationTime(expiresAt)
-        .sign(await getSigningKey(privateKey))
-
-    return Response.json(
+    const body = await issueRoomToken(
         {
-            token : roomToken,
             userId : user.id,
+            boardId : room,
+            orgId : authorization.orgId,
+            // Every org member can edit today; viewers are supported by the sync server.
+            role : "editor",
             name : user.firstName || "Teammate",
             picture : user.imageUrl,
-            expiresAt : expiresAt * 1000,
-            url : syncUrl,
         },
-        { headers : { 'cache-control' : 'no-store' } },
+        { privateKey, syncUrl },
     )
+
+    return Response.json(body, { headers : { 'cache-control' : 'no-store' } })
 }

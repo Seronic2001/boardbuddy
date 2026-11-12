@@ -1,7 +1,7 @@
 "use client";
 
 import { nanoid } from "nanoid";
-import { useCallback, useMemo, useState, useEffect, useRef } from "react";
+import { type ReactNode, useCallback, useMemo, useState, useEffect, useRef } from "react";
 
 import { 
   useHistory, 
@@ -50,10 +50,13 @@ const MIN_PEN_POINT_DISTANCE = 2;
 
 interface CanvasProps {
   boardId: string;
+  /** Replaces the board title bar (which reads the board from Convex). Used by /e2e. */
+  header?: ReactNode;
 };
 
 export const Canvas = ({
   boardId,
+  header,
 }: CanvasProps) => {
   const layerIds = useStorage((root) => root.layerIds);
 
@@ -475,7 +478,7 @@ export const Canvas = ({
     <main
       className="h-full w-full relative bg-neutral-100 touch-none"
     >
-      <Info boardId={boardId} />
+      {header ?? <Info boardId={boardId} />}
       <Participants />
       <ConnectionStatus />
       <Toolbar
