@@ -2,11 +2,16 @@
   "name": "boardbuddy",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:core": "npm run test -w @boardbuddy/sync-core",
+    "typecheck:core": "npm run typecheck -w @boardbuddy/sync-core"
   },
   "engines": {
     "node": ">=20.9.0"
