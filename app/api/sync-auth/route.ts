@@ -65,7 +65,14 @@ export async function POST(request : Request) {
         .sign(await getSigningKey(privateKey))
 
     return Response.json(
-        { token : roomToken, userId : user.id, expiresAt : expiresAt * 1000, url : syncUrl },
+        {
+            token : roomToken,
+            userId : user.id,
+            name : user.firstName || "Teammate",
+            picture : user.imageUrl,
+            expiresAt : expiresAt * 1000,
+            url : syncUrl,
+        },
         { headers : { 'cache-control' : 'no-store' } },
     )
 }

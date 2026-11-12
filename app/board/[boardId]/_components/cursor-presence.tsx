@@ -1,12 +1,12 @@
 "use client";
 
 import { memo } from "react";
-import { shallow } from "@liveblocks/client";
+import { shallow } from "@/lib/sync";
 
 import { 
   useOthersConnectionIds, 
   useOthersMapped
-} from "@/liveblocks.config";
+} from "@/lib/sync";
 import { colorToCss } from "@/lib/utils";
 
 import { Cursor } from "./cursor";

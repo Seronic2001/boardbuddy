@@ -30,6 +30,7 @@ type UserMeta = {
 export const {
   suspense: {
     RoomProvider,
+    useRoom,
     useSelf,
     useOthers,
     useOthersMapped,

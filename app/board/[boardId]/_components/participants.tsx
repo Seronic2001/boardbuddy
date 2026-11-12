@@ -1,6 +1,6 @@
 "use client";
 
-import { useOthers, useSelf } from "@/liveblocks.config";
+import { useOthers, useSelf } from "@/lib/sync";
 import { UserAvatar } from "./user-avatar";
 import { connectionIdToColor } from "@/lib/utils";
 import { memo } from "react";
