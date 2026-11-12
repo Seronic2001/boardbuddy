@@ -56,31 +56,31 @@ const LiveblocksBridge = ({ children }: { children: ReactNode }) => {
 
 // ---- BuddySync -------------------------------------------------------------------------
 
-// One id per page load. Not sessionStorage: duplicating a tab copies sessionStorage, and two
-// tabs with one id would keep replacing each other's connection.
-const TAB_ID = Array.from({ length: 16 }, () => Math.floor(Math.random() * 36).toString(36)).join("");
-
 const BuddySyncRoom = ({ children, roomId, fallback }: Omit<RoomProps, "backend">) => {
     const [backend, setBackend] = useState<BuddySyncBackend | null>(null);
     const [denied, setDenied] = useState(false);
 
     useEffect(() => {
+        // Tab identity and unsent edits are kept in IndexedDB; a reload adopts its saved
+        // identity (guarded by a Web Lock), so offline edits survive closing the tab.
         const connection = new BuddySyncConnection({
             boardId: roomId,
             authenticate: fetchSyncToken,
-            tabId: TAB_ID,
         });
         const offLoaded = connection.on("loaded", () => setBackend(new BuddySyncBackend(connection)));
         const offStatus = connection.on("status", () => {
             if (connection.status === "disconnected" && !connection.isLoaded) setDenied(true);
         });
         const onOnline = () => connection.reconnectNow();
+        const onPageHide = () => void connection.persistNow();
         window.addEventListener("online", onOnline);
+        window.addEventListener("pagehide", onPageHide);
         connection.start();
         return () => {
             offLoaded();
             offStatus();
             window.removeEventListener("online", onOnline);
+            window.removeEventListener("pagehide", onPageHide);
             connection.stop();
             setBackend(null);
             setDenied(false);

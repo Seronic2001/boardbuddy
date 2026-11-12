@@ -1,11 +1,14 @@
 import {
   CloseCode,
+  docFromJSON,
+  docToJSON,
   Replica,
   SyncClient,
   type PresenceData,
   type PresenceEntry,
   type TransportServerMessage,
 } from "@boardbuddy/sync-core";
+import { IndexedDbStore, lockName, tryLock, type LockManagerLike, type OfflineStore, type SavedSession } from "./offline";
 
 /**
  * Browser side of BuddySync for one board. Owns the WebSocket lifecycle around the pure
@@ -56,7 +59,16 @@ export type ConnectionOptions = {
   renewBeforeMs?: number;
   maxBackoffMs?: number;
   random?: () => number;
+  /**
+   * Offline persistence. Defaults to IndexedDB + navigator.locks when both exist; pass
+   * null to disable. Without locks there is no safe identity hand-over, so nothing is saved.
+   */
+  store?: OfflineStore | null;
+  locks?: LockManagerLike | null;
+  saveDebounceMs?: number;
 };
+
+const STALE_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 
 type Listener = () => void;
 
@@ -80,14 +92,29 @@ export class BuddySyncConnection {
   private selfKey: string | null = null;
   private readonly listeners = { status: new Set<Listener>(), presence: new Set<Listener>(), loaded: new Set<Listener>() };
 
-  readonly tabId: string;
-  private readonly opts: Required<Omit<ConnectionOptions, "tabId" | "WebSocketImpl">> & {
+  private tabIdValue: string;
+  private readonly store: OfflineStore | null;
+  private readonly locks: LockManagerLike | null;
+  private releaseIdentity: (() => void) | null = null;
+  /** True once we hold this identity's lock; only then may we write its saved session. */
+  private ownsIdentity = false;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly opts: Required<Omit<ConnectionOptions, "tabId" | "WebSocketImpl" | "store" | "locks">> & {
     WebSocketImpl: typeof WebSocket;
   };
 
   constructor(options: ConnectionOptions) {
-    this.tabId = options.tabId ?? randomTabId();
+    this.tabIdValue = options.tabId ?? randomTabId();
+    const locks =
+      options.locks !== undefined
+        ? options.locks
+        : ((globalThis.navigator as { locks?: LockManagerLike } | undefined)?.locks ?? null);
+    const store =
+      options.store !== undefined ? options.store : globalThis.indexedDB ? new IndexedDbStore() : null;
+    this.locks = locks;
+    this.store = locks ? store : null;
     this.opts = {
+      saveDebounceMs: 300,
       presenceThrottleMs: 30,
       heartbeatMs: 10_000,
       renewBeforeMs: 60_000,
@@ -96,6 +123,11 @@ export class BuddySyncConnection {
       WebSocketImpl: options.WebSocketImpl ?? globalThis.WebSocket,
       ...options,
     } as BuddySyncConnection["opts"];
+  }
+
+  /** Fixed once the replica exists; a reload may adopt a saved identity's tab id. */
+  get tabId(): string {
+    return this.tabIdValue;
   }
 
   // ---- public state -------------------------------------------------------------------
@@ -148,8 +180,13 @@ export class BuddySyncConnection {
   }
 
   stop(): void {
+    if (this.stopped && this.statusValue === "disconnected") return;
     this.stopped = true;
     this.clearTimers();
+    // Save the final state, then let another tab adopt this identity.
+    const release = this.releaseIdentity;
+    this.releaseIdentity = null;
+    void this.persistNow().finally(() => release?.());
     const socket = this.socket;
     this.socket = null;
     socket?.close(1000, "Client closed");
@@ -190,7 +227,17 @@ export class BuddySyncConnection {
       return this.stop();
     }
     this.auth = auth;
-    this.ensureReplica(auth.userId);
+    if (!this.replicaValue) {
+      const saved = await this.claimIdentity(auth.userId);
+      if (this.stopped) {
+        this.releaseIdentity?.();
+        this.releaseIdentity = null;
+        this.ownsIdentity = false;
+        return;
+      }
+      this.ensureReplica(auth.userId);
+      if (saved) this.resume(saved);
+    }
     this.setStatus("connecting");
 
     const socket = new this.opts.WebSocketImpl(auth.url);
@@ -221,18 +268,104 @@ export class BuddySyncConnection {
     if (this.replicaValue) return;
     const replica = new Replica(`${userId}~${this.tabId}`);
     this.replicaValue = replica;
-    this.syncValue = new SyncClient(replica, (msg) => {
-      const socket = this.socket;
-      if (!socket || socket.readyState !== socket.OPEN) return;
-      const out = msg.t === "hello" ? { ...msg, token: this.auth?.token, tab: this.tabId } : msg;
-      socket.send(JSON.stringify(out));
-    });
+    this.syncValue = new SyncClient(
+      replica,
+      (msg) => {
+        const socket = this.socket;
+        if (!socket || socket.readyState !== socket.OPEN) return;
+        const out = msg.t === "hello" ? { ...msg, token: this.auth?.token, tab: this.tabId } : msg;
+        socket.send(JSON.stringify(out));
+      },
+      { onAck: () => this.scheduleSave() },
+    );
+    replica.subscribe(() => this.scheduleSave());
+  }
+
+  // ---- offline persistence --------------------------------------------------------------
+
+  /**
+   * Pick this page's identity: a saved one whose lock is free (preferring ones with unsent
+   * ops), or a fresh one. Either way we hold its lock until stop().
+   */
+  private async claimIdentity(userId: string): Promise<SavedSession | null> {
+    if (!this.store || !this.locks) return null;
+    let sessions: SavedSession[] = [];
+    try {
+      sessions = await this.store.list(this.opts.boardId, userId);
+    } catch {
+      // Storage unavailable (private mode, quota): run without persistence.
+    }
+    sessions.sort((a, b) => b.pending.length - a.pending.length || b.savedAt - a.savedAt);
+    let adopted: SavedSession | null = null;
+    for (const session of sessions) {
+      const release = await tryLock(this.locks, lockName(this.opts.boardId, session.tabId));
+      if (!release) continue; // another open tab is using it
+      if (!adopted) {
+        adopted = session;
+        this.releaseIdentity = release;
+        this.ownsIdentity = true;
+        continue;
+      }
+      // Free, nothing to send and old: clean up.
+      if (session.pending.length === 0 && Date.now() - session.savedAt > STALE_SESSION_MS) {
+        await this.store.delete(session.boardId, session.tabId).catch(() => {});
+      }
+      release();
+    }
+    if (adopted) {
+      this.tabIdValue = adopted.tabId;
+      return adopted;
+    }
+    this.releaseIdentity = await tryLock(this.locks, lockName(this.opts.boardId, this.tabIdValue));
+    this.ownsIdentity = this.releaseIdentity !== null;
+    return null;
+  }
+
+  /** Show the saved board at once and queue its unsent ops for the next hello. */
+  private resume(saved: SavedSession): void {
+    this.replicaValue!.merge(docFromJSON(saved.doc));
+    this.syncValue!.restore(saved);
+    if (!this.loaded) {
+      this.loaded = true;
+      this.emit("loaded");
+    }
+  }
+
+  private scheduleSave(): void {
+    if (!this.store || this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.persistNow();
+    }, this.opts.saveDebounceMs);
+  }
+
+  /** Write the current state now (also call on pagehide). */
+  async persistNow(): Promise<void> {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    if (!this.store || !this.replicaValue || !this.syncValue || !this.auth || !this.ownsIdentity) return;
+    const state = this.syncValue.exportState();
+    try {
+      await this.store.save({
+        boardId: this.opts.boardId,
+        userId: this.auth.userId,
+        tabId: this.tabIdValue,
+        doc: docToJSON(this.replicaValue.doc),
+        lastSeq: state.lastSeq,
+        nextCseq: state.nextCseq,
+        pending: [...state.pending],
+        savedAt: Date.now(),
+      });
+    } catch {
+      // Best effort: the ops are still in memory and will sync while the tab stays open.
+    }
   }
 
   private onMessage(msg: TransportServerMessage): void {
     switch (msg.t) {
       case "welcome":
         this.syncValue!.onMessage(msg);
+        this.scheduleSave(); // lastSeq may have moved without a doc change
         this.attempt = 0;
         this.setStatus("connected");
         if (!this.loaded) {

@@ -111,3 +111,53 @@ describe("Room", () => {
     expect(inbox.a).toContainEqual({ t: "ack", upTo: 2, seq: 1 });
   });
 });
+
+describe("SyncClient persistence", () => {
+  it("a restored client resends its queue under the same identity and the server dedups", async () => {
+    const { Replica } = await import("../src/replica");
+    const { SyncClient } = await import("../src/client");
+    const { docFromJSON, docToJSON, readLayer } = await import("../src/doc");
+    const store = new InMemoryPersister();
+    const room = new Room(store.load());
+    const flush = () => {
+      const batch = room.takeBatch();
+      if (batch) {
+        store.write(batch);
+        room.commit(batch);
+      }
+    };
+    const connect = (client: InstanceType<typeof SyncClient>) => {
+      room.connect("u~tab", (m) => client.onMessage(m));
+      client.onOpen();
+    };
+
+    // Session 1: one op is acked, two are still pending when the tab closes.
+    const r1 = new Replica("u~tab");
+    const c1 = new SyncClient(r1, (m) => room.receive("u~tab", m));
+    connect(c1);
+    c1.mutate((tx) => tx.create("a", { x: 1 }));
+    flush();
+    c1.mutate((tx) => tx.create("b", { x: 2 }));
+    room.disconnect("u~tab"); // the "b" op may or may not have reached the server
+    c1.onClose();
+    c1.mutate((tx) => tx.create("c", { x: 3 })); // offline
+    const saved = { doc: docToJSON(r1.doc), ...c1.exportState() };
+    expect(saved.pending.map((p) => p.cseq)).toEqual([2, 3]);
+
+    // Session 2: a new page load adopts the saved identity.
+    const r2 = new Replica("u~tab");
+    r2.merge(docFromJSON(JSON.parse(JSON.stringify(saved.doc))));
+    const c2 = new SyncClient(r2, (m) => room.receive("u~tab", m));
+    c2.restore(JSON.parse(JSON.stringify(saved)));
+    connect(c2);
+    flush();
+    expect(c2.pending).toEqual([]);
+    expect(room.seq).toBe(3); // "b" was sequenced once even though it was sent twice
+    expect(readLayer(room.committedDoc, "c")).toEqual({ x: 3 });
+    // New edits continue the cseq sequence.
+    c2.mutate((tx) => tx.set("a", "x", 9));
+    flush();
+    expect(room.durableCseq("u~tab")).toBe(4);
+    expect(() => c2.restore(saved)).toThrow();
+  });
+});

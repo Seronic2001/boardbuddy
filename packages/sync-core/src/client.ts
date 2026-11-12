@@ -16,6 +16,12 @@ import type { Replica, Tx } from "./replica";
  *   (Persisting `pending` to IndexedDB across page reloads is the transport's job.)
  */
 
+export type SyncClientState = {
+  readonly lastSeq: number;
+  readonly nextCseq: number;
+  readonly pending: readonly PendingOp[];
+};
+
 export type SyncClientEvents = {
   onAck?: (upTo: number) => void;
   onError?: (cseq: number, message: string) => void;
@@ -44,6 +50,26 @@ export class SyncClient {
 
   get isConnected(): boolean {
     return this.connected;
+  }
+
+  /** Queue state to persist next to the replica's doc (they must be saved together). */
+  exportState(): SyncClientState {
+    return { lastSeq: this.lastSeqValue, nextCseq: this.nextCseq, pending: this.queue };
+  }
+
+  /**
+   * Resume a saved session before connecting. The replica must already hold the saved doc,
+   * which includes the pending ops' effects. Pending ops go out on the next hello.
+   */
+  restore(state: SyncClientState): void {
+    if (this.connected || this.queue.length > 0 || this.nextCseq !== 1) {
+      throw new Error("restore() must be called on a fresh, disconnected client");
+    }
+    this.lastSeqValue = state.lastSeq;
+    this.queue = [...state.pending];
+    const highest = state.pending.at(-1)?.cseq ?? 0;
+    this.nextCseq = Math.max(state.nextCseq, highest + 1);
+    for (const p of state.pending) this.replica.receive([p.op]); // advances the clock past them
   }
 
   mutate(fn: (tx: Tx) => void): Op[] {
