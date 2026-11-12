@@ -110,6 +110,8 @@ export async function insert(page: Page, tool: Tool, x: number, y: number): Prom
 }
 
 async function layerPoint(page: Page, id: string) {
+  // The layer may have been created in another browser and still be on its way here.
+  await expect.poll(async () => (await snapshot(page)).layers[id] !== undefined).toBe(true);
   const layer = (await snapshot(page)).layers[id];
   // Inside the layer, away from the resize handles on its edges.
   return { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
