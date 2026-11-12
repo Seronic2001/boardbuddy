@@ -113,6 +113,34 @@ describe("offline persistence", () => {
     expect(readLayer(other.replica!.doc, "before")).toEqual({ x: 10 });
   }, 15_000);
 
+  it("saves a new local edit at once, without waiting for the debounce or a clean close", async () => {
+    // A closing tab's pagehide save may never finish, so an edit has to be on disk
+    // before then. Found by the Playwright reload test.
+    const b = browser();
+    const s = await server();
+    const c = new BuddySyncConnection({
+      boardId: "board_1",
+      authenticate: auth(() => s.port, "user_a"),
+      store: b.store,
+      locks: b.locks,
+      saveDebounceMs: 60_000, // would never fire within this test
+      maxBackoffMs: 100,
+    });
+    cleanup.push(() => c.stop());
+    c.start();
+    await waitFor(() => c.isLoaded);
+    await s.close();
+    await waitFor(() => c.status === "reconnecting");
+
+    c.sync!.mutate((tx) => tx.create("offline", { x: 1 }));
+    c.sync!.mutate((tx) => tx.set("offline", "x", 2)); // while the first save is in flight
+
+    const saved = async () => (await b.store.list("board_1", "user_a"))[0];
+    let session: Awaited<ReturnType<typeof saved>>;
+    await waitFor(() => (void saved().then((s) => (session = s)), session?.pending.length === 2), "both edits saved");
+    expect(session!.nextCseq).toBe(3);
+  });
+
   it("two open tabs never share an identity; a closed tab's identity is adopted", async () => {
     const b = browser();
     const s = await server();

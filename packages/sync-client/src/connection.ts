@@ -65,6 +65,10 @@ export type ConnectionOptions = {
    */
   store?: OfflineStore | null;
   locks?: LockManagerLike | null;
+  /**
+   * Delay for saves that only record server progress (acks, remote ops). New local edits
+   * are saved at once instead: a closing tab can't be relied on to finish a save.
+   */
   saveDebounceMs?: number;
 };
 
@@ -99,6 +103,11 @@ export class BuddySyncConnection {
   /** True once we hold this identity's lock; only then may we write its saved session. */
   private ownsIdentity = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** nextCseq as of the last save started; a higher one means unsaved local edits. */
+  private savedNextCseq = 0;
+  private saveInFlight = false;
+  private saveQueued = false;
+  private docCheckQueued = false;
   private readonly opts: Required<Omit<ConnectionOptions, "tabId" | "WebSocketImpl" | "store" | "locks">> & {
     WebSocketImpl: typeof WebSocket;
   };
@@ -278,7 +287,7 @@ export class BuddySyncConnection {
       },
       { onAck: () => this.scheduleSave() },
     );
-    replica.subscribe(() => this.scheduleSave());
+    replica.subscribe(() => this.onDocChanged());
   }
 
   // ---- offline persistence --------------------------------------------------------------
@@ -331,12 +340,47 @@ export class BuddySyncConnection {
     }
   }
 
+  /**
+   * The replica notifies before SyncClient queues a local op, so look a microtask later,
+   * once nextCseq tells whether this change is an unsent edit.
+   */
+  private onDocChanged(): void {
+    if (this.docCheckQueued) return;
+    this.docCheckQueued = true;
+    queueMicrotask(() => {
+      this.docCheckQueued = false;
+      this.scheduleSave();
+    });
+  }
+
   private scheduleSave(): void {
-    if (!this.store || this.saveTimer) return;
+    if (!this.store) return;
+    if (this.syncValue && this.syncValue.exportState().nextCseq !== this.savedNextCseq) {
+      // Unsent local edits: save now. Waiting for the debounce (or for pagehide, whose
+      // async IndexedDB write may never finish) loses them when the tab closes.
+      return this.saveSoon();
+    }
+    if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       void this.persistNow();
     }, this.opts.saveDebounceMs);
+  }
+
+  /** At most one save in flight; edits made meanwhile are saved right after it. */
+  private saveSoon(): void {
+    if (this.saveInFlight) {
+      this.saveQueued = true;
+      return;
+    }
+    this.saveInFlight = true;
+    void this.persistNow().finally(() => {
+      this.saveInFlight = false;
+      if (this.saveQueued) {
+        this.saveQueued = false;
+        this.saveSoon();
+      }
+    });
   }
 
   /** Write the current state now (also call on pagehide). */
@@ -345,6 +389,7 @@ export class BuddySyncConnection {
     this.saveTimer = null;
     if (!this.store || !this.replicaValue || !this.syncValue || !this.auth || !this.ownsIdentity) return;
     const state = this.syncValue.exportState();
+    this.savedNextCseq = state.nextCseq;
     try {
       await this.store.save({
         boardId: this.opts.boardId,
