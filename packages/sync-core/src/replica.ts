@@ -1,5 +1,5 @@
-import { apply, applyAll, emptyDoc, mergeDocs, readLayer, type Doc, type Json, type Op } from "./doc";
-import { Clock, ClockDriftError, compareHLC, type ClockOptions, type HLC } from "./hlc";
+import { apply, applyAll, DELETED_FIELD, emptyDoc, isVisible, mergeDocs, readLayer, type Doc, type Json, type Op } from "./doc";
+import { Clock, ClockDriftError, compareHLC, encodeHLC, type ClockOptions, type HLC } from "./hlc";
 import { History, type HistoryOptions } from "./history";
 
 /**
@@ -103,6 +103,36 @@ export class Replica {
       this.current = next;
       this.notify();
     }
+  }
+
+  /**
+   * New ops that re-assert every field where our copy is newer than `theirs` (a server that
+   * lost history), skipping fields written by an op in `covered` (keys from encodeHLC).
+   * Fresh timestamps let them through the server's authorship check; they change no values
+   * here and are not undoable. Call after merge(theirs), so the clock is past everything.
+   */
+  reassert(theirs: Doc, covered: ReadonlySet<string> = new Set()): Op[] {
+    const ops: Op[] = [];
+    for (const [id, ours] of this.current.layers) {
+      const other = theirs.layers.get(id);
+      const newer = Object.entries(ours.fields).filter(([field, fv]) => {
+        if (covered.has(encodeHLC(fv.ts))) return false;
+        const theirsTs = other?.fields[field]?.ts;
+        return !theirsTs || compareHLC(fv.ts, theirsTs) > 0;
+      });
+      if (newer.length === 0) continue;
+      if (!other) {
+        // A layer they never had: recreate it if it's visible (a lost tombstone needs nothing).
+        if (isVisible(ours)) ops.push({ kind: "create", layer: id, fields: readLayer(this.current, id)!, ts: this.clock.tick() });
+        continue;
+      }
+      for (const [field, fv] of newer) {
+        const ts = this.clock.tick();
+        if (field === DELETED_FIELD) ops.push({ kind: fv.v === true ? "delete" : "restore", layer: id, ts });
+        else ops.push({ kind: "set", layer: id, field, v: fv.v, ts });
+      }
+    }
+    return this.applyLocal(ops);
   }
 
   undo(): Op[] {

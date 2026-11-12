@@ -85,7 +85,7 @@ export function buildMigrationBatch(storage: PlainStorage): BuildResult {
     batch: {
       entries,
       cseqs,
-      snapshot: { seq: ops.length, doc: docToJSON(replica.doc), cseqs },
+      snapshot: { seq: ops.length, doc: docToJSON(replica.doc), cseqs, headTs: ops.at(-1)!.ts },
     },
     layers: seen.size,
     orphans,

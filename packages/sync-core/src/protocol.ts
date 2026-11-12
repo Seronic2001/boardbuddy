@@ -1,4 +1,5 @@
 import type { DocJSON, Op } from "./doc";
+import type { HLC } from "./hlc";
 
 /**
  * Wire protocol v1 (JSON). Auth (the room token) is handled by the transport wrapper, so
@@ -9,13 +10,28 @@ import type { DocJSON, Op } from "./doc";
  *    only in cseq order and ignores ones it already has, so resending is always safe.
  *  - `seq` is the server's total order for the room. A client's `lastSeq` is the highest
  *    seq it has applied with no gaps before it.
+ *
+ * Lost history (the server restored from an older backup): a seq alone can't show it, since
+ * the restored server may already have reused the client's lastSeq for different ops. So
+ * hello also carries the timestamp of the op at lastSeq (`lastTs`, unique per op). If the
+ * room has no such op there, it sends a snapshot with `reset`, and the client resyncs and
+ * re-sends whatever it has that the server lost. `nextCseq` lets the room skip the cseqs it
+ * forgot, so the client's new ops aren't stuck behind a gap.
  */
 
 export type PendingOp = { readonly cseq: number; readonly op: Op };
 
 export type ClientMessage =
   /** Sent on every (re)connect and periodically as a resync heartbeat. */
-  | { readonly t: "hello"; readonly lastSeq: number; readonly pending: readonly PendingOp[] }
+  | {
+      readonly t: "hello";
+      readonly lastSeq: number;
+      readonly pending: readonly PendingOp[];
+      /** Timestamp of the op at lastSeq, if the client knows it. */
+      readonly lastTs?: HLC;
+      /** The cseq this client will use next. */
+      readonly nextCseq?: number;
+    }
   | { readonly t: "ops"; readonly batch: readonly PendingOp[] };
 
 export type Snapshot = {
@@ -23,6 +39,8 @@ export type Snapshot = {
   readonly doc: DocJSON;
   /** Highest accepted cseq per client, so dedup survives log compaction. */
   readonly cseqs: Readonly<Record<string, number>>;
+  /** Timestamp of the op at `seq`, so a client's lastSeq can be checked against it. */
+  readonly headTs?: HLC;
 };
 
 export type ServerMessage =
@@ -31,7 +49,12 @@ export type ServerMessage =
       readonly seq: number;
       readonly catchup:
         | { readonly kind: "ops"; readonly from: number; readonly ops: readonly Op[] }
-        | { readonly kind: "snapshot"; readonly snapshot: Snapshot };
+        | {
+            readonly kind: "snapshot";
+            readonly snapshot: Snapshot;
+            /** The room's history doesn't contain the client's lastSeq (see top of file). */
+            readonly reset?: boolean;
+          };
     }
   /** Every op of this client up to `upTo` is durable. */
   | { readonly t: "ack"; readonly upTo: number; readonly seq: number }
@@ -69,6 +92,8 @@ export type TransportClientMessage =
       readonly tab?: string;
       readonly lastSeq: number;
       readonly pending: readonly PendingOp[];
+      readonly lastTs?: HLC;
+      readonly nextCseq?: number;
     }
   | { readonly t: "ops"; readonly batch: readonly PendingOp[] }
   /** Partial update, merged into this connection's presence. */

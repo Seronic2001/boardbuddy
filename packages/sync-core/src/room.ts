@@ -7,6 +7,7 @@ import {
   type Doc,
   type Op,
 } from "./doc";
+import { compareHLC, type HLC } from "./hlc";
 import type { ClientMessage, PendingOp, ServerMessage, Snapshot } from "./protocol";
 
 /**
@@ -68,6 +69,9 @@ export class Room {
   private readonly recent: LogEntry[] = [];
   private durableCseqs: Map<string, number>;
   private snapshotSeq: number;
+  /** Timestamps of the ops at snapshotSeq and head, when known (older snapshots lack it). */
+  private snapshotTs: HLC | undefined;
+  private headTs: HLC | undefined;
 
   /** Accepted but not yet durable. */
   private nextSeq: number;
@@ -89,6 +93,7 @@ export class Room {
 
     const base = state.snapshot ? docFromJSON(state.snapshot.doc) : emptyDoc();
     this.snapshotSeq = state.snapshot?.seq ?? 0;
+    this.snapshotTs = state.snapshot?.headTs;
     const entries = state.entries
       .filter((e) => e.seq > this.snapshotSeq)
       .sort((a, b) => a.seq - b.seq);
@@ -97,6 +102,7 @@ export class Room {
     });
     this.doc = applyAll(base, entries.map((e) => e.op));
     this.head = entries.at(-1)?.seq ?? this.snapshotSeq;
+    this.headTs = entries.at(-1)?.op.ts ?? this.snapshotTs;
     this.recent.push(...entries.slice(-this.catchupWindow));
     this.durableCseqs = new Map(Object.entries({ ...state.snapshot?.cseqs, ...state.cseqs }));
     this.acceptedCseqs = new Map(this.durableCseqs);
@@ -127,8 +133,11 @@ export class Room {
     const send = this.sessions.get(client);
     if (!send) return;
     if (msg.t === "hello") {
-      send(this.welcome(msg.lastSeq));
+      // The queue first: the client may answer the welcome with new ops straight away,
+      // and they have to follow the queue's cseqs.
+      this.skipForgottenCseqs(client, msg.pending[0]?.cseq ?? msg.nextCseq);
       this.accept(client, msg.pending, send);
+      send(this.welcome(msg.lastSeq, msg.lastTs));
     } else {
       this.accept(client, msg.batch, send);
     }
@@ -148,7 +157,8 @@ export class Room {
     let snapshot: Snapshot | undefined;
     if (lastSeq - this.snapshotSeq >= this.snapshotEvery) {
       const doc = applyAll(this.doc, entries.map((e) => e.op));
-      snapshot = { seq: lastSeq, doc: docToJSON(doc), cseqs };
+      const headTs = entries.at(-1)?.op.ts ?? this.headTs;
+      snapshot = { seq: lastSeq, doc: docToJSON(doc), cseqs, ...(headTs ? { headTs } : {}) };
     }
     const batch: PersistBatch = snapshot ? { entries, cseqs, snapshot } : { entries, cseqs };
     this.inFlight = { batch, rejections: this.rejections };
@@ -166,12 +176,18 @@ export class Room {
 
     const ops = batch.entries.map((e) => e.op);
     this.doc = applyAll(this.doc, ops);
-    if (batch.entries.length > 0) this.head = batch.entries.at(-1)!.seq;
+    if (batch.entries.length > 0) {
+      this.head = batch.entries.at(-1)!.seq;
+      this.headTs = batch.entries.at(-1)!.op.ts;
+    }
     this.recent.push(...batch.entries);
     if (this.recent.length > this.catchupWindow) {
       this.recent.splice(0, this.recent.length - this.catchupWindow);
     }
-    if (batch.snapshot) this.snapshotSeq = batch.snapshot.seq;
+    if (batch.snapshot) {
+      this.snapshotSeq = batch.snapshot.seq;
+      this.snapshotTs = batch.snapshot.headTs;
+    }
 
     const changed = new Set<string>();
     for (const [client, cseq] of Object.entries(batch.cseqs)) {
@@ -194,21 +210,53 @@ export class Room {
 
   // -------------------------------------------------------------------------------------
 
-  private welcome(lastSeq: number): ServerMessage {
+  private welcome(lastSeq: number, lastTs: HLC | undefined): ServerMessage {
+    const reset = this.historyDiffers(lastSeq, lastTs);
     const oldest = this.recent[0]?.seq ?? this.head + 1;
-    const inWindow = lastSeq <= this.head && lastSeq >= Math.min(oldest, this.head + 1) - 1;
+    const inWindow = !reset && lastSeq <= this.head && lastSeq >= Math.min(oldest, this.head + 1) - 1;
     if (inWindow) {
       const ops = this.recent.filter((e) => e.seq > lastSeq).map((e) => e.op);
       return { t: "welcome", seq: this.head, catchup: { kind: "ops", from: lastSeq + 1, ops } };
     }
-    return {
-      t: "welcome",
+    const snapshot: Snapshot = {
       seq: this.head,
-      catchup: {
-        kind: "snapshot",
-        snapshot: { seq: this.head, doc: docToJSON(this.doc), cseqs: Object.fromEntries(this.durableCseqs) },
-      },
+      doc: docToJSON(this.doc),
+      cseqs: Object.fromEntries(this.durableCseqs),
+      ...(this.headTs ? { headTs: this.headTs } : {}),
     };
+    return { t: "welcome", seq: this.head, catchup: reset ? { kind: "snapshot", snapshot, reset } : { kind: "snapshot", snapshot } };
+  }
+
+  /**
+   * True when the client has seen a history this room doesn't have: its lastSeq is beyond
+   * our head, or our op at that seq isn't the one it saw. Only a server restored from an
+   * older backup does that. If we can't tell (an old client, or a seq we no longer hold
+   * the timestamp for), assume all is well, as before.
+   */
+  private historyDiffers(lastSeq: number, lastTs: HLC | undefined): boolean {
+    if (lastSeq > this.head) return true;
+    if (lastSeq === 0 || !lastTs) return false;
+    const ours = this.tsAt(lastSeq);
+    return ours !== undefined && compareHLC(ours, lastTs) !== 0;
+  }
+
+  private tsAt(seq: number): HLC | undefined {
+    const first = this.recent[0]?.seq;
+    if (first !== undefined && seq >= first && seq <= this.head) return this.recent[seq - first]!.op.ts;
+    if (seq === this.head) return this.headTs;
+    if (seq === this.snapshotSeq) return this.snapshotTs;
+    return undefined;
+  }
+
+  /**
+   * At hello, a client's oldest unacked cseq (or, with nothing pending, its next cseq) is
+   * never more than one past what we have, because it only drops ops we acked. A bigger
+   * gap means we lost acked ops (restored from a backup), so continue from there instead of
+   * waiting for cseqs that will never come. A client can only skip its own numbers.
+   */
+  private skipForgottenCseqs(client: string, base: number | undefined): void {
+    if (base === undefined || !Number.isInteger(base)) return;
+    if (base - 1 > (this.acceptedCseqs.get(client) ?? 0)) this.acceptedCseqs.set(client, base - 1);
   }
 
   private accept(client: string, batch: readonly PendingOp[], send: (m: ServerMessage) => void): void {

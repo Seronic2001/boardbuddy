@@ -1,5 +1,5 @@
 import pg from "pg";
-import type { DocJSON, DurableState, LogEntry, Op, PersistBatch, Snapshot } from "@boardbuddy/sync-core";
+import type { DocJSON, DurableState, HLC, LogEntry, Op, PersistBatch, Snapshot } from "@boardbuddy/sync-core";
 import type { Persister } from "./persister";
 
 /**
@@ -19,8 +19,13 @@ export class PostgresPersister implements Persister {
     try {
       // Read in one snapshot-isolated transaction so the log and snapshot agree.
       await client.query("begin isolation level repeatable read read only");
-      const snap = await client.query<{ seq: string; state: DocJSON; cseqs: Record<string, number> }>(
-        "select seq, state, cseqs from board_snapshots where board_id = $1",
+      const snap = await client.query<{
+        seq: string;
+        state: DocJSON;
+        cseqs: Record<string, number>;
+        head_ts: HLC | null;
+      }>(
+        "select seq, state, cseqs, head_ts from board_snapshots where board_id = $1",
         [boardId],
       );
       const snapshotRow = snap.rows[0];
@@ -43,7 +48,12 @@ export class PostgresPersister implements Persister {
       }));
       const cseqs = Object.fromEntries(cseqRows.rows.map((r) => [r.client_id, Number(r.cseq)]));
       const snapshot: Snapshot | undefined = snapshotRow
-        ? { seq: fromSeq, doc: snapshotRow.state, cseqs: snapshotRow.cseqs }
+        ? {
+            seq: fromSeq,
+            doc: snapshotRow.state,
+            cseqs: snapshotRow.cseqs,
+            ...(snapshotRow.head_ts ? { headTs: snapshotRow.head_ts } : {}),
+          }
         : undefined;
       return snapshot ? { snapshot, entries, cseqs } : { entries, cseqs };
     } catch (err) {
@@ -83,12 +93,13 @@ export class PostgresPersister implements Persister {
         );
       }
       if (batch.snapshot) {
-        const { seq, doc, cseqs: snapCseqs } = batch.snapshot;
+        const { seq, doc, cseqs: snapCseqs, headTs } = batch.snapshot;
         await client.query(
-          `insert into board_snapshots (board_id, seq, state, cseqs) values ($1, $2, $3, $4)
-           on conflict (board_id) do update set seq = excluded.seq, state = excluded.state, cseqs = excluded.cseqs
+          `insert into board_snapshots (board_id, seq, state, cseqs, head_ts) values ($1, $2, $3, $4, $5)
+           on conflict (board_id) do update
+             set seq = excluded.seq, state = excluded.state, cseqs = excluded.cseqs, head_ts = excluded.head_ts
            where board_snapshots.seq < excluded.seq`,
-          [boardId, seq, JSON.stringify(doc), JSON.stringify(snapCseqs)],
+          [boardId, seq, JSON.stringify(doc), JSON.stringify(snapCseqs), headTs ? JSON.stringify(headTs) : null],
         );
         // Compaction: everything up to the snapshot is now redundant.
         await client.query("delete from board_ops where board_id = $1 and seq <= $2", [boardId, seq]);

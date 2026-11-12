@@ -1,4 +1,5 @@
 import { docFromJSON, type Op } from "./doc";
+import { encodeHLC, type HLC } from "./hlc";
 import type { ClientMessage, PendingOp, ServerMessage } from "./protocol";
 import type { Replica, Tx } from "./replica";
 
@@ -18,6 +19,8 @@ import type { Replica, Tx } from "./replica";
 
 export type SyncClientState = {
   readonly lastSeq: number;
+  /** Timestamp of the op at lastSeq; lets the server spot a history it doesn't have. */
+  readonly lastTs?: HLC;
   readonly nextCseq: number;
   readonly pending: readonly PendingOp[];
 };
@@ -30,6 +33,7 @@ export type SyncClientEvents = {
 export class SyncClient {
   private connected = false;
   private lastSeqValue = 0;
+  private lastTsValue: HLC | undefined;
   private nextCseq = 1;
   private queue: PendingOp[] = [];
   private readonly early = new Map<number, Op>();
@@ -44,6 +48,10 @@ export class SyncClient {
     return this.lastSeqValue;
   }
 
+  get lastTs(): HLC | undefined {
+    return this.lastTsValue;
+  }
+
   get pending(): readonly PendingOp[] {
     return this.queue;
   }
@@ -54,7 +62,8 @@ export class SyncClient {
 
   /** Queue state to persist next to the replica's doc (they must be saved together). */
   exportState(): SyncClientState {
-    return { lastSeq: this.lastSeqValue, nextCseq: this.nextCseq, pending: this.queue };
+    const state = { lastSeq: this.lastSeqValue, nextCseq: this.nextCseq, pending: this.queue };
+    return this.lastTsValue ? { ...state, lastTs: this.lastTsValue } : state;
   }
 
   /**
@@ -66,6 +75,7 @@ export class SyncClient {
       throw new Error("restore() must be called on a fresh, disconnected client");
     }
     this.lastSeqValue = state.lastSeq;
+    this.lastTsValue = state.lastTs;
     this.queue = [...state.pending];
     const highest = state.pending.at(-1)?.cseq ?? 0;
     this.nextCseq = Math.max(state.nextCseq, highest + 1);
@@ -95,7 +105,14 @@ export class SyncClient {
 
   /** Resync heartbeat: fills gaps left by lost messages and resends unacked ops. */
   hello(): void {
-    if (this.connected) this.send({ t: "hello", lastSeq: this.lastSeqValue, pending: this.queue });
+    if (!this.connected) return;
+    this.send({
+      t: "hello",
+      lastSeq: this.lastSeqValue,
+      pending: this.queue,
+      nextCseq: this.nextCseq,
+      ...(this.lastTsValue ? { lastTs: this.lastTsValue } : {}),
+    });
   }
 
   onMessage(msg: ServerMessage): void {
@@ -103,8 +120,16 @@ export class SyncClient {
       case "welcome":
         if (msg.catchup.kind === "snapshot") {
           const { snapshot } = msg.catchup;
-          this.replica.merge(docFromJSON(snapshot.doc));
-          if (snapshot.seq > this.lastSeqValue) this.lastSeqValue = snapshot.seq;
+          const serverDoc = docFromJSON(snapshot.doc);
+          this.replica.merge(serverDoc);
+          // Only the room's flag: a snapshot older than lastSeq on its own may just be a
+          // stale welcome (a resync heartbeat's answer overtaken by newer ops).
+          if (msg.catchup.reset) {
+            this.resetTo(snapshot.seq, snapshot.headTs, serverDoc);
+          } else if (snapshot.seq > this.lastSeqValue) {
+            this.lastSeqValue = snapshot.seq;
+            this.lastTsValue = snapshot.headTs;
+          }
           this.drain();
         } else {
           this.ingest(msg.catchup.from, msg.catchup.ops);
@@ -131,6 +156,21 @@ export class SyncClient {
     return ops;
   }
 
+  /**
+   * The server lost history we saw (restored from a backup). Take its position, so we
+   * don't skip the seqs it now uses for other ops, and send back as our own new edits
+   * every field where our copy is newer than its copy. Those are the edits it lost. Each
+   * one only wins where nothing newer exists, so nobody's later work is overwritten.
+   * Fields our pending ops already cover go out with the queue.
+   */
+  private resetTo(seq: number, ts: HLC | undefined, serverDoc: ReturnType<typeof docFromJSON>): void {
+    this.early.clear();
+    this.lastSeqValue = seq;
+    this.lastTsValue = ts;
+    const covered = new Set(this.queue.map((p) => encodeHLC(p.op.ts)));
+    this.enqueue(this.replica.reassert(serverDoc, covered));
+  }
+
   private ingest(from: number, ops: readonly Op[]): void {
     ops.forEach((op, i) => {
       const seq = from + i;
@@ -142,7 +182,9 @@ export class SyncClient {
   private drain(): void {
     const ready: Op[] = [];
     while (this.early.has(this.lastSeqValue + 1)) {
-      ready.push(this.early.get(this.lastSeqValue + 1)!);
+      const op = this.early.get(this.lastSeqValue + 1)!;
+      ready.push(op);
+      this.lastTsValue = op.ts;
       this.early.delete(++this.lastSeqValue);
     }
     for (const seq of this.early.keys()) if (seq <= this.lastSeqValue) this.early.delete(seq);

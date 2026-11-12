@@ -1,4 +1,4 @@
-import type { DocJSON, PendingOp } from "@boardbuddy/sync-core";
+import type { DocJSON, HLC, PendingOp } from "@boardbuddy/sync-core";
 
 /**
  * Offline persistence. A saved session is one tab identity's state for one board: the
@@ -17,6 +17,8 @@ export type SavedSession = {
   tabId: string;
   doc: DocJSON;
   lastSeq: number;
+  /** Timestamp of the op at lastSeq (absent in sessions saved by older versions). */
+  lastTs?: HLC;
   nextCseq: number;
   pending: PendingOp[];
   savedAt: number;

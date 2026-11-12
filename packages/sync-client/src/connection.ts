@@ -397,6 +397,7 @@ export class BuddySyncConnection {
         tabId: this.tabIdValue,
         doc: docToJSON(this.replicaValue.doc),
         lastSeq: state.lastSeq,
+        ...(state.lastTs ? { lastTs: state.lastTs } : {}),
         nextCseq: state.nextCseq,
         pending: [...state.pending],
         savedAt: Date.now(),

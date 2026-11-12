@@ -149,6 +149,9 @@ export class RoomHost {
           t: "hello",
           lastSeq: msg.lastSeq,
           pending: session.claims.role === "viewer" ? [] : msg.pending,
+          // Both are needed to recover after a restore from backup (see sync-core protocol.ts).
+          ...(msg.lastTs ? { lastTs: msg.lastTs } : {}),
+          ...(msg.nextCseq !== undefined ? { nextCseq: msg.nextCseq } : {}),
         });
         break;
       case "ops":

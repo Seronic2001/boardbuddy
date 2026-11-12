@@ -80,6 +80,17 @@ describe.skipIf(!url)("PostgresPersister", () => {
     expect(state.cseqs).toEqual({ "user_a~tab00001": 1 });
   });
 
+  it("keeps the snapshot's head timestamp, so a restarted room can check a client's lastSeq", async () => {
+    const b = board();
+    const headTs = op(2).ts;
+    await db.write(b, {
+      entries: [entry(1), entry(2)],
+      cseqs: { "user_a~tab00001": 2 },
+      snapshot: { seq: 2, doc: [], cseqs: { "user_a~tab00001": 2 }, headTs },
+    });
+    expect((await db.load(b)).snapshot).toEqual({ seq: 2, doc: [], cseqs: { "user_a~tab00001": 2 }, headTs });
+  });
+
   it("cseq high-water marks never go backwards", async () => {
     const b = board();
     await db.write(b, { entries: [], cseqs: { c: 5 } });
@@ -124,4 +135,74 @@ describe.skipIf(!url)("sync server on Postgres", () => {
     await server.close();
     await db.close();
   });
+});
+
+describe.skipIf(!url)("sync server on a Postgres restored from an older backup", () => {
+  it("clients that are ahead keep syncing, and the edits the restore lost come back", async () => {
+    const pg = (await import("pg")).default;
+    const { startSyncServer } = await import("../src/server");
+    const { keyPair, signToken, TestClient, waitFor } = await import("./helpers");
+    const { readLayer } = await import("@boardbuddy/sync-core");
+    const { privateKey, publicKey } = await keyPair();
+    const boardId = `pgrestore_${Date.now()}`;
+    const sql = new pg.Client({ connectionString: url });
+    await sql.connect();
+    const tables = ["board_ops", "board_snapshots", "board_client_cseqs"];
+
+    let port = 0;
+    const start = async () => {
+      const db = new PostgresPersister(url!);
+      const server = await startSyncServer({ port, host: "127.0.0.1", publicKey, persister: db, room: { flushMs: 10 } });
+      port = server.port;
+      return { db, server };
+    };
+    const client = async (userId: string) =>
+      new TestClient(`ws://127.0.0.1:${port}`, await signToken(privateKey, { userId, boardId }), userId);
+
+    try {
+      let { db, server } = await start();
+      const writer = await (await client("user_w")).connect();
+      const reader = await (await client("user_r")).connect();
+      writer.sync.mutate((tx) => tx.create("kept", { x: 1 }));
+      await waitFor(() => writer.sync.pending.length === 0, 5_000, "first edit acked");
+
+      // "Backup": copy this board's rows aside.
+      for (const t of tables) {
+        await sql.query(`create table ${t}_bak_${boardId} as select * from ${t} where board_id = $1`, [boardId]);
+      }
+      writer.sync.mutate((tx) => tx.create("lost", { x: 2 }));
+      writer.sync.mutate((tx) => tx.set("kept", "x", 5));
+      await waitFor(() => writer.sync.pending.length === 0, 5_000, "later edits acked");
+      await waitFor(() => readLayer(reader.sync.replica.doc, "lost") !== undefined, 5_000, "reader saw them");
+
+      // Restore the backup while the server is down; the clients stay as they were.
+      await server.close();
+      await db.close();
+      for (const t of tables) {
+        await sql.query(`delete from ${t} where board_id = $1`, [boardId]);
+        await sql.query(`insert into ${t} select * from ${t}_bak_${boardId}`);
+      }
+      ({ db, server } = await start());
+      await writer.connect();
+      await reader.connect();
+
+      writer.sync.mutate((tx) => tx.set("kept", "y", 1));
+      await waitFor(() => writer.sync.pending.length === 0, 5_000, "a new edit from the writer gets through");
+
+      const newcomer = await (await client("user_n")).connect();
+      newcomer.sync.mutate((tx) => tx.create("after", { x: 3 }));
+      const expected = { kept: { x: 5, y: 1 }, lost: { x: 2 }, after: { x: 3 } };
+      const visible = (c: InstanceType<typeof TestClient>) =>
+        Object.fromEntries(["kept", "lost", "after"].map((id) => [id, readLayer(c.sync.replica.doc, id)]));
+      for (const c of [writer, reader, newcomer]) {
+        await waitFor(() => JSON.stringify(visible(c)) === JSON.stringify(expected), 5_000, `${c.userId} converged`);
+      }
+      await Promise.all([writer.close(), reader.close(), newcomer.close()]);
+      await server.close();
+      await db.close();
+    } finally {
+      for (const t of tables) await sql.query(`drop table if exists ${t}_bak_${boardId}`);
+      await sql.end();
+    }
+  }, 30_000);
 });

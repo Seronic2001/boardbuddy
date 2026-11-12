@@ -61,6 +61,8 @@ const clientMessage = z.discriminatedUnion("t", [
     tab: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional(),
     lastSeq: z.number().int().nonnegative(),
     pending: pendingOps,
+    lastTs: hlc.optional(),
+    nextCseq: z.number().int().positive().optional(),
   }),
   z.object({ t: z.literal("ops"), batch: pendingOps }),
   z.object({
