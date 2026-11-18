@@ -115,6 +115,8 @@ DATABASE_URL="postgres://..." npm run sync:migrate-liveblocks -- --all --write
 
 The script needs `LIVEBLOCKS_SECRET` (read from `.env.local`; use the production key).
 It never overwrites a board that already has BuddySync data, so it's safe to re-run.
+If your network blocks outbound port 5432, add `--neon-websocket`: it reaches Neon through
+its serverless driver over WebSockets on port 443, with the same connection string.
 
 Then switch boards in Vercel, redeploying after each change:
 

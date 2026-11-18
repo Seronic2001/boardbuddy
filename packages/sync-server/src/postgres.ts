@@ -2,16 +2,32 @@ import pg from "pg";
 import type { DocJSON, DurableState, HLC, LogEntry, Op, PersistBatch, Snapshot } from "@boardbuddy/sync-core";
 import type { Persister } from "./persister";
 
+/** The slice of pg's Pool this persister uses, so drop-in drivers (Neon's) fit too. */
+export interface SqlPool {
+  connect(): Promise<{
+    query<R extends object = Record<string, unknown>>(text: string, values?: unknown[]): Promise<{ rows: R[] }>;
+    release(): void;
+  }>;
+  end(): Promise<void>;
+}
+
 /**
  * Postgres storage (Repository for the op log and snapshots). Each batch is one
  * transaction, so a crash mid-write leaves nothing behind, and the room never acks
  * anything that isn't committed.
  */
 export class PostgresPersister implements Persister {
-  private readonly pool: pg.Pool;
+  private readonly pool: SqlPool;
 
-  constructor(connectionString: string, options: { max?: number } = {}) {
-    this.pool = new pg.Pool({ connectionString, max: options.max ?? 10 });
+  /**
+   * Takes a connection string, or a ready pool with pg's API (for example Neon's
+   * serverless driver, which tunnels over WebSockets on port 443).
+   */
+  constructor(connection: string | SqlPool, options: { max?: number } = {}) {
+    this.pool =
+      typeof connection === "string"
+        ? new pg.Pool({ connectionString: connection, max: options.max ?? 10 })
+        : connection;
   }
 
   async load(boardId: string): Promise<DurableState> {
