@@ -11,8 +11,16 @@ const op = (n: number, client = "a"): Op => ({
   ts: { wall: n, counter: 0, client },
 });
 
-function setup(options = {}) {
+/** A store holding layer "l", so the room accepts sets on it. */
+function seededStore(): InMemoryPersister {
   const store = new InMemoryPersister();
+  const ts = { wall: 0, counter: 0, client: "seed" };
+  store.write({ entries: [], cseqs: {}, snapshot: { seq: 0, doc: [{ id: "l", fields: { deleted: { v: false, ts } } }], cseqs: {} } });
+  return store;
+}
+
+function setup(options = {}) {
+  const store = seededStore();
   const room = new Room(store.load(), options);
   const inbox: Record<string, ServerMessage[]> = { a: [], b: [] };
   room.connect("a", (m) => inbox.a!.push(m));

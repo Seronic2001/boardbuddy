@@ -1,4 +1,4 @@
-import { apply, applyAll, DELETED_FIELD, emptyDoc, isVisible, mergeDocs, readLayer, type Doc, type Json, type Op } from "./doc";
+import { apply, applyAll, DELETED_FIELD, emptyDoc, isVisible, mergeDocs, readLayer, type Doc, type Json, type LayerRecord, type Op } from "./doc";
 import { Clock, ClockDriftError, compareHLC, encodeHLC, type ClockOptions, type HLC } from "./hlc";
 import { History, type HistoryOptions } from "./history";
 
@@ -101,6 +101,23 @@ export class Replica {
     const next = mergeDocs(this.current, doc);
     if (next !== this.current) {
       this.current = next;
+      this.notify();
+    }
+  }
+
+  /**
+   * Drop layers that `theirs` (an up-to-date server snapshot) doesn't have, except `keep`.
+   * Used after merge(theirs): the server purged them, so keeping them would diverge.
+   */
+  forgetMissing(theirs: Doc, keep: ReadonlySet<string> = new Set()): void {
+    let layers: Map<string, LayerRecord> | null = null;
+    for (const id of this.current.layers.keys()) {
+      if (theirs.layers.has(id) || keep.has(id)) continue;
+      layers ??= new Map(this.current.layers);
+      layers.delete(id);
+    }
+    if (layers) {
+      this.current = { layers };
       this.notify();
     }
   }

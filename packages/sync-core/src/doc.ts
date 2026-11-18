@@ -15,6 +15,12 @@ import { compareHLC, type HLC } from "./hlc";
  *  - `set` ops on a deleted layer are still recorded in their registers. If we dropped them,
  *    the result would depend on whether the set arrived before or after the delete, and a
  *    later restore would show different states on different replicas.
+ *
+ * Tombstone cleanup: a deleted layer whose newest write is older than the offline window
+ * (30 days) is removed by a `purge` op. Only the server writes purges, at compaction time,
+ * into the same sequenced log as everything else, so every replica removes the layer at
+ * the same point in the order. Purge is NOT commutative with later edits to that layer,
+ * which is why the room rejects any op on a layer it no longer has (see room.ts).
  */
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -47,7 +53,10 @@ export type DeleteOp = { readonly kind: "delete"; readonly layer: string; readon
 /** Only produced by undoing a delete. */
 export type RestoreOp = { readonly kind: "restore"; readonly layer: string; readonly ts: HLC };
 
-export type Op = CreateOp | SetOp | DeleteOp | RestoreOp;
+/** Server-only: forget a long-deleted layer entirely (tombstone cleanup). */
+export type PurgeOp = { readonly kind: "purge"; readonly layer: string; readonly ts: HLC };
+
+export type Op = CreateOp | SetOp | DeleteOp | RestoreOp | PurgeOp;
 
 export function emptyDoc(): Doc {
   return { layers: new Map() };
@@ -76,6 +85,12 @@ export function assertValidOp(op: Op): void {
  * check `next !== prev` to see whether anything changed.
  */
 export function apply(doc: Doc, op: Op): Doc {
+  if (op.kind === "purge") {
+    if (!doc.layers.has(op.layer)) return doc;
+    const layers = new Map(doc.layers);
+    layers.delete(op.layer);
+    return { layers };
+  }
   const prev = doc.layers.get(op.layer);
   const record = applyToRecord(prev, op);
   if (record === prev) return doc;
@@ -88,6 +103,12 @@ export function apply(doc: Doc, op: Op): Doc {
 export function applyAll(doc: Doc, ops: Iterable<Op>): Doc {
   let layers: Map<string, LayerRecord> | null = null;
   for (const op of ops) {
+    if (op.kind === "purge") {
+      if (!(layers ?? doc.layers).has(op.layer)) continue;
+      layers ??= new Map(doc.layers);
+      layers.delete(op.layer);
+      continue;
+    }
     const prev = (layers ?? doc.layers).get(op.layer);
     const record = applyToRecord(prev, op);
     if (record === prev) continue;
@@ -97,7 +118,7 @@ export function applyAll(doc: Doc, ops: Iterable<Op>): Doc {
   return layers ? { layers } : doc;
 }
 
-function applyToRecord(prev: LayerRecord | undefined, op: Op): LayerRecord {
+function applyToRecord(prev: LayerRecord | undefined, op: Exclude<Op, PurgeOp>): LayerRecord {
   assertValidOp(op);
   let record: LayerRecord = prev ?? { id: op.layer, fields: {} };
   switch (op.kind) {
@@ -156,6 +177,29 @@ function writeField(record: LayerRecord, field: string, v: Json, ts: HLC): Layer
 // ---------------------------------------------------------------------------------------
 // Read helpers
 // ---------------------------------------------------------------------------------------
+
+/** Newest write to any field of the layer. */
+export function newestWrite(record: LayerRecord): HLC | undefined {
+  let newest: HLC | undefined;
+  for (const fv of Object.values(record.fields)) {
+    if (!newest || compareHLC(fv.ts, newest) > 0) newest = fv.ts;
+  }
+  return newest;
+}
+
+/**
+ * Deleted layers that nobody has written to since before `beforeWall` (ms): safe to purge,
+ * since any client that could still edit them has been offline longer than the window.
+ */
+export function expiredTombstones(doc: Doc, beforeWall: number): string[] {
+  const out: string[] = [];
+  for (const [id, record] of doc.layers) {
+    if (record.fields[DELETED_FIELD]?.v !== true) continue;
+    const newest = newestWrite(record);
+    if (newest && newest.wall < beforeWall) out.push(id);
+  }
+  return out.sort();
+}
 
 /** A layer is visible once it has been created and its latest delete/restore is not a delete. */
 export function isVisible(record: LayerRecord | undefined): boolean {

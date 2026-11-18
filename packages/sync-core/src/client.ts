@@ -120,13 +120,28 @@ export class SyncClient {
       case "welcome":
         if (msg.catchup.kind === "snapshot") {
           const { snapshot } = msg.catchup;
+          // Only the room's flag means lost history: a snapshot older than lastSeq on its
+          // own is just a stale welcome (a resync heartbeat's answer overtaken by newer ops).
+          // We already hold everything in it, and merging it could bring back a layer
+          // purged since, so it is ignored.
+          if (!msg.catchup.reset && snapshot.seq < this.lastSeqValue) {
+            this.drain();
+            break;
+          }
           const serverDoc = docFromJSON(snapshot.doc);
           this.replica.merge(serverDoc);
-          // Only the room's flag: a snapshot older than lastSeq on its own may just be a
-          // stale welcome (a resync heartbeat's answer overtaken by newer ops).
           if (msg.catchup.reset) {
             this.resetTo(snapshot.seq, snapshot.headTs, serverDoc);
-          } else if (snapshot.seq > this.lastSeqValue) {
+          } else {
+            // Not a stale welcome, so a layer the server lacks was purged (or its create was
+            // rejected) while we weren't following the log. Our own creates stay only if the
+            // server hasn't had them yet: one it already wrote (ack lost) and then purged
+            // must go too, so compare against our durable cseq in the snapshot.
+            const durable = snapshot.cseqs[this.replica.clientId] ?? 0;
+            const creating = new Set(
+              this.queue.filter((p) => p.op.kind === "create" && p.cseq > durable).map((p) => p.op.layer),
+            );
+            this.replica.forgetMissing(serverDoc, creating);
             this.lastSeqValue = snapshot.seq;
             this.lastTsValue = snapshot.headTs;
           }

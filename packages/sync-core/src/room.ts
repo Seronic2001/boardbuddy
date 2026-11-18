@@ -4,10 +4,11 @@ import {
   docFromJSON,
   docToJSON,
   emptyDoc,
+  expiredTombstones,
   type Doc,
   type Op,
 } from "./doc";
-import { compareHLC, type HLC } from "./hlc";
+import { Clock, compareHLC, type HLC } from "./hlc";
 import type { ClientMessage, PendingOp, ServerMessage, Snapshot } from "./protocol";
 
 /**
@@ -22,7 +23,20 @@ import type { ClientMessage, PendingOp, ServerMessage, Snapshot } from "./protoc
  * write that contains it is durable. If seqs were exposed before that, a crash could reuse
  * them for different ops, and a client whose lastSeq covered them would silently skip the
  * replacements.
+ *
+ * Tombstone cleanup: whenever a snapshot is due, deleted layers untouched for
+ * `tombstoneTtlMs` get a server-authored `purge` op appended to the batch, so the snapshot
+ * no longer holds them and the purge reaches clients in sequence like any op. From then on
+ * an op on that layer (from a client offline longer than the window) is rejected with
+ * LAYER_GONE instead of resurrecting a partial record. A client that falls back to a
+ * snapshot drops layers the snapshot doesn't have (see client.ts).
  */
+
+/** Rejection message for ops on a layer the room doesn't have (purged, or never created). */
+export const LAYER_GONE = "LAYER_GONE";
+/** Author of purge ops. Real client ids are `${userId}~${tab}`, so this can't collide. */
+export const SERVER_CLIENT = "~server";
+export const DEFAULT_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type LogEntry = {
   readonly seq: number;
@@ -56,6 +70,10 @@ export type RoomOptions = {
    * reject. Rejected ops still use up their cseq, so the client queue keeps moving.
    */
   validate?: (op: Op, client: string, committed: Doc) => string | null;
+  /** Deleted layers untouched this long are purged at the next snapshot. Default 30 days. */
+  tombstoneTtlMs?: number;
+  /** Physical time, for tombstone expiry and purge timestamps. */
+  now?: () => number;
 };
 
 type Rejection = { client: string; cseq: number; message: string };
@@ -84,12 +102,18 @@ export class Room {
   private readonly snapshotEvery: number;
   private readonly maxBatch: number;
   private readonly validate: RoomOptions["validate"];
+  private readonly tombstoneTtlMs: number;
+  private readonly now: () => number;
+  private readonly clock: Clock;
 
   constructor(state: DurableState = { entries: [], cseqs: {} }, options: RoomOptions = {}) {
     this.catchupWindow = options.catchupWindow ?? 2_000;
     this.snapshotEvery = options.snapshotEvery ?? 500;
     this.maxBatch = options.maxBatch ?? 1_000;
     this.validate = options.validate;
+    this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
+    this.now = options.now ?? Date.now;
+    this.clock = new Clock(SERVER_CLIENT, { now: this.now });
 
     const base = state.snapshot ? docFromJSON(state.snapshot.doc) : emptyDoc();
     this.snapshotSeq = state.snapshot?.seq ?? 0;
@@ -147,19 +171,35 @@ export class Room {
   // Persistence handshake
   // -------------------------------------------------------------------------------------
 
-  /** Next write to make durable, or null if there is nothing to write or a write is in flight. */
-  takeBatch(): PersistBatch | null {
-    if (this.inFlight || (this.buffer.length === 0 && this.rejections.length === 0)) return null;
-    const entries = this.buffer;
-    this.buffer = [];
-    const lastSeq = entries.at(-1)?.seq ?? this.head;
+  /**
+   * Next write to make durable, or null if there is nothing to write or a write is in flight.
+   * `compact` forces a snapshot (and tombstone cleanup) even below `snapshotEvery`, e.g.
+   * when the room goes idle; it returns null only if that would change nothing.
+   */
+  takeBatch({ compact = false }: { compact?: boolean } = {}): PersistBatch | null {
+    if (this.inFlight) return null;
+    const nothingNew = this.buffer.length === 0 && this.rejections.length === 0;
+    if (nothingNew && !compact) return null;
+    let entries = this.buffer;
+    const accepted = entries.at(-1)?.seq ?? this.head;
     const cseqs = Object.fromEntries(this.acceptedCseqs);
     let snapshot: Snapshot | undefined;
-    if (lastSeq - this.snapshotSeq >= this.snapshotEvery) {
-      const doc = applyAll(this.doc, entries.map((e) => e.op));
+    if (compact || accepted - this.snapshotSeq >= this.snapshotEvery) {
+      let doc = applyAll(this.doc, entries.map((e) => e.op));
+      const purges: LogEntry[] = expiredTombstones(doc, this.now() - this.tombstoneTtlMs).map((layer) => {
+        const seq = this.nextSeq++;
+        return { seq, client: SERVER_CLIENT, cseq: seq, op: { kind: "purge", layer, ts: this.clock.tick() } };
+      });
+      if (nothingNew && purges.length === 0 && accepted === this.snapshotSeq) return null;
+      if (purges.length > 0) {
+        entries = [...entries, ...purges];
+        doc = applyAll(doc, purges.map((e) => e.op));
+      }
+      const lastSeq = entries.at(-1)?.seq ?? this.head;
       const headTs = entries.at(-1)?.op.ts ?? this.headTs;
       snapshot = { seq: lastSeq, doc: docToJSON(doc), cseqs, ...(headTs ? { headTs } : {}) };
     }
+    this.buffer = [];
     const batch: PersistBatch = snapshot ? { entries, cseqs, snapshot } : { entries, cseqs };
     this.inFlight = { batch, rejections: this.rejections };
     this.rejections = [];
@@ -271,6 +311,10 @@ export class Room {
       accepted = cseq;
       try {
         assertValidOp(op);
+        if (op.kind === "purge") throw new Error("purge ops are server-only");
+        // Every layer a client can see was created through this room, so an unknown one
+        // was purged (or its create rejected). Applying the op would leave a stray record.
+        if (op.kind !== "create" && !this.layerExists(op.layer)) throw new Error(LAYER_GONE);
         const problem = this.validate?.(op, client, this.doc);
         if (problem !== null && problem !== undefined) throw new Error(problem);
         this.buffer.push({ seq: this.nextSeq++, client, cseq, op });
@@ -284,6 +328,17 @@ export class Room {
     if (batch.length > 0 && batch[0]!.cseq <= durable) {
       send({ t: "ack", upTo: durable, seq: this.head });
     }
+  }
+
+  /** Whether `layer` exists once everything accepted so far is applied. */
+  private layerExists(layer: string): boolean {
+    let exists = this.doc.layers.has(layer);
+    const scan = (entries: readonly LogEntry[]) => {
+      for (const e of entries) if (e.op.layer === layer) exists = e.op.kind !== "purge";
+    };
+    if (this.inFlight) scan(this.inFlight.batch.entries);
+    scan(this.buffer);
+    return exists;
   }
 }
 

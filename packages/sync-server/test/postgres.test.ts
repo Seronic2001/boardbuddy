@@ -54,7 +54,8 @@ describe.skipIf(!url)("PostgresPersister", () => {
     const room = new Room({ entries: [], cseqs: {} }, { snapshotEvery: 3 });
     room.connect("user_a~tab00001", () => {});
     for (let i = 1; i <= 7; i++) {
-      room.receive("user_a~tab00001", { t: "ops", batch: [{ cseq: i, op: op(i) }] });
+      const next: Op = i === 1 ? { kind: "create", layer: "l", fields: { x: 1 }, ts: op(1).ts } : op(i);
+      room.receive("user_a~tab00001", { t: "ops", batch: [{ cseq: i, op: next }] });
       const batch = room.takeBatch()!;
       await db.write(b, batch);
       room.commit(batch);
@@ -66,6 +67,43 @@ describe.skipIf(!url)("PostgresPersister", () => {
     expect(restored.seq).toBe(7);
     expect(restored.committedDoc.layers.get("l")!.fields.x!.v).toBe(7);
     expect(restored.durableCseq("user_a~tab00001")).toBe(7);
+  });
+
+  it("stores purge ops and keeps purged layers gone after a reload", async () => {
+    const b = board();
+    const DAY = 24 * 60 * 60 * 1000;
+    let now = 1_000 * DAY;
+    const client = "user_a~tab00001";
+    const opts = { now: () => now };
+    const room = new Room({ entries: [], cseqs: {} }, opts);
+    room.connect(client, () => {});
+    const ts = (wall: number) => ({ wall, counter: 0, client });
+    const write = async (compact = false) => {
+      const batch = room.takeBatch({ compact })!;
+      await db.write(b, batch);
+      room.commit(batch);
+    };
+    room.receive(client, {
+      t: "ops",
+      batch: [
+        { cseq: 1, op: { kind: "create", layer: "a", fields: { x: 1 }, ts: ts(now) } },
+        { cseq: 2, op: { kind: "create", layer: "b", fields: { x: 2 }, ts: ts(now) } },
+        { cseq: 3, op: { kind: "delete", layer: "a", ts: ts(now + 1) } },
+        { cseq: 4, op: { kind: "delete", layer: "b", ts: ts(now + 2) } },
+      ],
+    });
+    await write();
+    now += 31 * DAY;
+    // Idle compaction: two purge rows (authored by ~server, cseq = seq) and the snapshot
+    // after them go in one transaction, which also compacts the log up to the snapshot.
+    await write(true);
+    const state = await db.load(b);
+    expect(state.snapshot?.seq).toBe(6);
+    expect(state.snapshot?.doc).toEqual([]);
+    const restored = new Room(state, opts);
+    expect(restored.committedDoc.layers.size).toBe(0);
+    expect(restored.durableCseq(client)).toBe(4);
+    expect(restored.durableCseq("~server")).toBe(0);
   });
 
   it("a failed batch leaves nothing behind (atomic)", async () => {

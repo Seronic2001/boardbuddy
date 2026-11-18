@@ -1,1 +1,30 @@
-[]
+[
+  {
+    "seed": 312,
+    "clients": 8,
+    "ops": 5000,
+    "drop": 0.05,
+    "duplicate": 0.05,
+    "reorder": 0.2,
+    "offline": 0.003,
+    "crash": 0.002,
+    "skewMs": 2000,
+    "catchupWindow": 200,
+    "snapshotEvery": 100,
+    "tombstoneTtlMs": 5000
+  },
+  {
+    "seed": 996,
+    "clients": 8,
+    "ops": 5000,
+    "drop": 0.05,
+    "duplicate": 0.05,
+    "reorder": 0.2,
+    "offline": 0.003,
+    "crash": 0.002,
+    "skewMs": 2000,
+    "catchupWindow": 200,
+    "snapshotEvery": 100,
+    "tombstoneTtlMs": 5000
+  }
+]

@@ -1,5 +1,6 @@
 import {
   CloseCode,
+  DEFAULT_TOMBSTONE_TTL_MS,
   isVisible,
   Room,
   type Doc,
@@ -29,6 +30,8 @@ export type RoomHostOptions = {
   idleMs?: number;
   maxLayers?: number;
   maxSkewMs?: number;
+  /** Deleted layers untouched this long are purged at compaction. Default 30 days. */
+  tombstoneTtlMs?: number;
   now?: () => number;
   log?: (event: string, data: Record<string, unknown>) => void;
 };
@@ -76,10 +79,15 @@ export class RoomHost {
       idleMs: 30_000,
       maxLayers: 100,
       maxSkewMs: 60_000,
+      tombstoneTtlMs: DEFAULT_TOMBSTONE_TTL_MS,
       now: Date.now,
       ...options,
     };
-    this.room = new Room(state, { validate: (op, client, doc) => this.validate(op, client, doc) });
+    this.room = new Room(state, {
+      validate: (op, client, doc) => this.validate(op, client, doc),
+      tombstoneTtlMs: this.opts.tombstoneTtlMs,
+      now: this.opts.now,
+    });
     this.flushTimer = setInterval(() => void this.flush(), this.opts.flushMs);
     this.flushTimer.unref();
     this.armIdleTimer();
@@ -192,6 +200,9 @@ export class RoomHost {
         const more = await this.flushOnce();
         if (!more && !this.writing) break;
       }
+      // Compact on the way out (idle or shutdown): snapshot plus tombstone cleanup, so
+      // quiet boards that never reach snapshotEvery ops still get cleaned up.
+      if (!this.writing && this.failedWrites === 0) await this.flushOnce(true);
     } finally {
       for (const s of this.sessions.values()) s.close(CloseCode.RoomUnavailable, "Room closed");
       this.sessions.clear();
@@ -206,9 +217,9 @@ export class RoomHost {
   }
 
   /** Returns true if a batch was written. */
-  private async flushOnce(): Promise<boolean> {
+  private async flushOnce(compact = false): Promise<boolean> {
     if (this.writing) return false;
-    const batch = this.room.takeBatch();
+    const batch = this.room.takeBatch({ compact });
     if (!batch) return false;
     this.writing = this.writeWithRetry(batch).finally(() => (this.writing = null));
     await this.writing;

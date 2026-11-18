@@ -220,6 +220,31 @@ describe("sync server", () => {
     await new Promise((r) => setTimeout(r, 50)); // let the op reach the room
     await s.close();
     const state = await persister.load(BOARD);
-    expect(state.entries.map((e) => e.op.layer)).toEqual(["l1"]);
+    // Shutdown also compacts: the op is in the snapshot, and the log before it is gone.
+    expect(state.snapshot?.doc.map((r) => r.id)).toEqual(["l1"]);
+    expect(state.entries).toEqual([]);
+  });
+
+  it("an idle room purges tombstones older than the offline window", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    let now = Date.now();
+    const persister = new MemoryPersister();
+    const s = await server(persister, { idleMs: 50, now: () => now, maxSkewMs: 60 * DAY });
+    const a = await client(s, { userId: "user_a", boardId: BOARD });
+    a.sync.mutate((tx) => tx.create("gone", { x: 1 }));
+    a.sync.mutate((tx) => tx.create("kept", { x: 2 }));
+    a.sync.mutate((tx) => tx.delete("gone"));
+    await waitFor(() => a.sync.pending.length === 0, 3_000, "acks");
+    await a.close();
+
+    now += 31 * DAY;
+    await waitFor(() => s.rooms.size === 0, 3_000, "idle room to unload");
+    const state = await persister.load(BOARD);
+    expect(state.snapshot?.doc.map((r) => r.id)).toEqual(["kept"]);
+
+    // A client joining later never sees the purged layer.
+    const b = await client(s, { userId: "user_b", boardId: BOARD });
+    await waitFor(() => readLayer(b.sync.replica.doc, "kept") !== undefined, 3_000, "snapshot");
+    expect(b.sync.replica.doc.layers.has("gone")).toBe(false);
   });
 });

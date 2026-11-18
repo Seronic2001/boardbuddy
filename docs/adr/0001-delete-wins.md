@@ -40,8 +40,8 @@ Consequences:
 - A `set` that arrives before its `create` (reordering) is also kept. The layer appears once
   the create arrives, and the newer set still wins.
 - A layer stays in the document as a tombstone after deletion. Tombstones are removed only
-  by compaction, after the maximum offline window (see plan section 5). A client offline
-  longer than that gets a full snapshot.
+  by compaction, after the maximum offline window. See ADR 0002 for how that stays
+  convergent.
 
 ## Verification
 

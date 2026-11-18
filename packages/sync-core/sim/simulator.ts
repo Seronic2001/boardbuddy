@@ -1,8 +1,8 @@
 import { SyncClient } from "../src/client";
-import { applyAll, canonical, readLayer, type Json, type Op } from "../src/doc";
+import { applyAll, canonical, readLayer, type Doc, type Json, type Op } from "../src/doc";
 import type { ClientMessage, ServerMessage } from "../src/protocol";
 import { Replica } from "../src/replica";
-import { InMemoryPersister, Room, type PersistBatch } from "../src/room";
+import { InMemoryPersister, LAYER_GONE, Room, type PersistBatch } from "../src/room";
 import { orderedLayerIds, zKeyTop } from "../src/zorder";
 
 /**
@@ -17,7 +17,11 @@ import { orderedLayerIds, zKeyTop } from "../src/zorder";
  * Checks:
  *  1. Durability: after every restart, the server has every op any client was acked for.
  *  2. Convergence: once faults stop and the system settles, every client equals the
- *     server, the server equals "apply every op ever generated", and nothing is pending.
+ *     server, the server equals "apply every op ever generated, minus purged layers", and
+ *     nothing is pending.
+ *
+ * Tombstone cleanup runs with a TTL of seconds instead of 30 days, so purges race with
+ * offline clients that still edit, undo or restore the purged layers.
  */
 
 export type SimConfig = {
@@ -36,6 +40,8 @@ export type SimConfig = {
   skewMs: number;
   catchupWindow: number;
   snapshotEvery: number;
+  /** Deleted layers untouched this long (sim ms) are purged at the next snapshot. */
+  tombstoneTtlMs: number;
 };
 
 export const defaultConfig: SimConfig = {
@@ -50,6 +56,7 @@ export const defaultConfig: SimConfig = {
   skewMs: 2_000,
   catchupWindow: 200,
   snapshotEvery: 100,
+  tombstoneTtlMs: 5_000,
 };
 
 export type SimStats = {
@@ -64,6 +71,8 @@ export type SimStats = {
   opsGenerated: number;
   undos: number;
   layers: number;
+  purged: number;
+  goneRejections: number;
 };
 
 export type SimResult =
@@ -159,6 +168,7 @@ type SimClient = {
 
 const FLUSH_MS = 50;
 const HELLO_MS = 1_000;
+const SIM_EPOCH = 1_700_000_000_000;
 
 export function runSimulation(partial: Partial<SimConfig> = {}): SimResult {
   const cfg: SimConfig = { ...defaultConfig, ...partial };
@@ -177,13 +187,21 @@ export function runSimulation(partial: Partial<SimConfig> = {}): SimResult {
     opsGenerated: 0,
     undos: 0,
     layers: 0,
+    purged: 0,
+    goneRejections: 0,
   };
+  const purged = new Set<string>();
   const allOps: Op[] = [];
   let faults = true;
   let actionsLeft = cfg.ops;
 
   // ---- server -------------------------------------------------------------------------
-  const roomOptions = { catchupWindow: cfg.catchupWindow, snapshotEvery: cfg.snapshotEvery };
+  const roomOptions = {
+    catchupWindow: cfg.catchupWindow,
+    snapshotEvery: cfg.snapshotEvery,
+    tombstoneTtlMs: cfg.tombstoneTtlMs,
+    now: () => SIM_EPOCH + q.now,
+  };
   let room: Room | null = new Room(store.load(), roomOptions);
   let serverEpoch = 0;
 
@@ -259,6 +277,12 @@ export function runSimulation(partial: Partial<SimConfig> = {}): SimResult {
   function commitWrite(batch: PersistBatch, sEpoch: number): void {
     if (serverEpoch !== sEpoch || !room) return; // crashed mid-write
     store.write(batch);
+    for (const e of batch.entries) {
+      if (e.op.kind === "purge") {
+        purged.add(e.op.layer);
+        stats.purged++;
+      }
+    }
     room.commit(batch);
   }
 
@@ -294,11 +318,16 @@ export function runSimulation(partial: Partial<SimConfig> = {}): SimResult {
   for (let i = 0; i < cfg.clients; i++) {
     const id = `c${i}`;
     const skew = rng.int(-cfg.skewMs, cfg.skewMs);
-    const replica = new Replica(id, { now: () => 1_700_000_000_000 + q.now + skew, limit: 100 });
+    const replica = new Replica(id, { now: () => SIM_EPOCH + q.now + skew, limit: 100 });
     const c: SimClient = { id, epoch: 0, online: false, wantOnline: true, created: 0, maxAcked: 0, sync: null! };
     c.sync = new SyncClient(replica, (msg) => c.online && toServer(c, msg), {
       onAck: (upTo) => (c.maxAcked = Math.max(c.maxAcked, upTo)),
       onError: (cseq, message) => {
+        // Expected: an edit (often an offline undo/redo) on a layer purged meanwhile.
+        if (message === LAYER_GONE) {
+          stats.goneRejections++;
+          return;
+        }
         throw new SimFailure(`${id} got an error for cseq ${cseq}: ${message}`);
       },
     });
@@ -391,10 +420,14 @@ export function runSimulation(partial: Partial<SimConfig> = {}): SimResult {
       if (!c.online) return `${c.id} offline`;
       if (c.sync.pending.length > 0) return `${c.id} has ${c.sync.pending.length} pending ops`;
       if (c.sync.lastSeq !== room.seq) return `${c.id} at seq ${c.sync.lastSeq}, server at ${room.seq}`;
-      if (canonical(c.sync.replica.doc) !== target) return `${c.id} differs from server`;
+      if (canonical(c.sync.replica.doc) !== target) {
+        return `${c.id} differs from server: ${firstDifference(c.sync.replica.doc, room.committedDoc)}`;
+      }
     }
-    if (canonical(applyAll({ layers: new Map() }, allOps)) !== target) {
-      return "server state differs from applying every generated op";
+    const everything = applyAll({ layers: new Map() }, allOps);
+    const expected = { layers: new Map([...everything.layers].filter(([id]) => !purged.has(id))) };
+    if (canonical(expected) !== target) {
+      return "server state differs from applying every generated op minus purged layers";
     }
     return null;
   };
@@ -441,6 +474,15 @@ export function runSimulation(partial: Partial<SimConfig> = {}): SimResult {
     if (err instanceof SimFailure) return { ok: false, error: err.message, atMs: q.now, stats };
     return { ok: false, error: `Exception: ${(err as Error).stack ?? err}`, atMs: q.now, stats };
   }
+}
+
+function firstDifference(a: Doc, b: Doc): string {
+  for (const id of new Set([...a.layers.keys(), ...b.layers.keys()])) {
+    const x = JSON.stringify(a.layers.get(id) ?? null);
+    const y = JSON.stringify(b.layers.get(id) ?? null);
+    if (x !== y) return `layer ${id}: ${x} vs ${y}`;
+  }
+  return "no layer differs";
 }
 
 function color(rng: Rng): Json {
