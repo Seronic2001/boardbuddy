@@ -3,8 +3,7 @@ import { issueRoomToken } from '@/lib/sync/token'
 import { auth, currentUser } from '@clerk/nextjs/server'
 import { ConvexHttpClient } from 'convex/browser'
 
-// Room tokens for the BuddySync server. Same authorization as /api/liveblocks-auth:
-// signed-in Clerk user, active organization, and the board must belong to that organization
+// Room tokens for the BuddySync server. Authorization: signed-in Clerk user, active organization, and the board must belong to that organization
 // (Convex is queried with the caller's own token). The sync server only verifies the
 // signature with the public key.
 

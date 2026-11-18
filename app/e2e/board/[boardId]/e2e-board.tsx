@@ -18,7 +18,7 @@ export const E2eBoard = ({ boardId, user }: E2eBoardProps) => {
     const authenticate = useMemo(() => e2eTokenFetcher(user), [user]);
 
     return (
-        <Room roomId={boardId} fallback={<Loading />} backend="buddysync" authenticate={authenticate}>
+        <Room roomId={boardId} fallback={<Loading />} authenticate={authenticate}>
             <E2eProbe />
             <Canvas
                 boardId={boardId}

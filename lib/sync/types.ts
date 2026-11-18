@@ -2,11 +2,12 @@ import type { Color, Layer, Point } from "@/types/canvas";
 
 /**
  * The seam between the UI and the real-time backend (Adapter pattern). Components only use
- * the hooks in ./hooks, which run on top of a SyncBackend. LiveblocksBackend wraps the old
- * service and BuddySyncBackend runs on our own sync engine. A per-board flag picks one.
+ * the hooks in ./hooks, which run on top of a SyncBackend; BuddySyncBackend implements it on
+ * our own sync engine, and tests can supply their own.
  *
  * The mutation surface (MutableStorage) copies the subset of Liveblocks' LiveMap /
- * LiveObject / LiveList API that the canvas already uses, so components barely change.
+ * LiveObject / LiveList API that the canvas used before the move to BuddySync, so the
+ * components didn't have to change.
  */
 
 export type Presence = {
@@ -79,8 +80,6 @@ export type HistoryApi = {
 export type SyncStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
 
 export interface SyncBackend {
-  readonly kind: "liveblocks" | "buddysync";
-
   /** Must return the same object until something changes (useSyncExternalStore). */
   getStorage(): StorageView;
   subscribeStorage(listener: () => void): () => void;

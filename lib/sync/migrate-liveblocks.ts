@@ -11,7 +11,7 @@ import { plainToLayer, storageForTx } from "./layer-doc";
  * what a board looks like after normal log compaction.
  *
  * Boards that already have BuddySync data are never touched, so re-running is safe.
- * Run it before a board's flag points at BuddySync: a sync server that already has the
+ * Run it before anyone opens the board on BuddySync: a sync server that already has the
  * (empty) room open keeps showing it empty until the room is idle-closed and reloaded.
  */
 

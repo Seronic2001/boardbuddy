@@ -18,7 +18,6 @@ import {
  * Room component waits for that before rendering the canvas.
  */
 export class BuddySyncBackend implements SyncBackend {
-  readonly kind = "buddysync" as const;
   private readonly views = new StorageViewCache();
   private readonly ids = new ConnectionIds();
   private activeStorage: MutableStorage | null = null;

@@ -2,8 +2,8 @@
 
 The Next.js app stays on Vercel. The sync server is a long-running WebSocket process, so it
 runs on **Render** (free web service) from `packages/sync-server/Dockerfile`, configured
-by `render.yaml` in the repository root, with **Neon** (free Postgres) for storage. Boards
-move over one at a time with `SYNC_BACKEND_BOARDS`.
+by `render.yaml` in the repository root, with **Neon** (free Postgres) for storage. Every
+board uses it; the app no longer has a Liveblocks fallback.
 
 What the free tiers mean here:
 
@@ -44,8 +44,8 @@ key to Render (it only verifies them).
 
 ## 3. Create the service on Render
 
-The Blueprint deploys from `master`, so merge the BuddySync branch first. That is safe:
-every board stays on Liveblocks until step 5.
+The Blueprint deploys from `master`. Set up the service and move the boards (step 6)
+before the app's next deploy, because the app only talks to this server.
 
 1. Render dashboard → New → Blueprint → connect the GitHub repository. Render reads
    `render.yaml` and proposes the `boardbuddy-sync` service (free plan).
@@ -78,10 +78,10 @@ Set these in the Vercel project and redeploy:
 |---|---|
 | `SYNC_PRIVATE_KEY` | the private key from step 2 |
 | `NEXT_PUBLIC_SYNC_URL` | `wss://boardbuddy-sync.onrender.com` (your service's host) |
-| `SYNC_BACKEND_BOARDS` | leave unset for now |
 
-Every board is still on Liveblocks. Open any board with `?sync=buddysync` to check that
-BuddySync works in production. A board you haven't migrated will look empty there.
+Without them `/api/sync-auth` answers 500 and boards don't open. `SYNC_BACKEND_BOARDS` and
+`LIVEBLOCKS_SECRET` are no longer read by the app and can be deleted (keep a copy of the
+Liveblocks secret while you might still need the migration script).
 
 ### Disconnecting removed members (Clerk webhook)
 
@@ -118,22 +118,17 @@ It never overwrites a board that already has BuddySync data, so it's safe to re-
 If your network blocks outbound port 5432, add `--neon-websocket`: it reaches Neon through
 its serverless driver over WebSockets on port 443, with the same connection string.
 
-Then switch boards in Vercel, redeploying after each change:
-
-1. `SYNC_BACKEND_BOARDS=<one board id>`: try it with real use.
-2. `SYNC_BACKEND_BOARDS=*`: every board.
-
-Migrate a board **before** it's switched. Run the script again right before switching, to
-pick up boards created or edited on Liveblocks since the last run. Boards already on
-BuddySync are skipped, so a board edited on Liveblocks after its migration keeps its
-migrated version. To start that board over, delete its rows from the `board_*` tables
-before re-running.
+Run it right before deploying the version of the app without Liveblocks, so boards
+created or edited on Liveblocks up to that moment come across. Boards already on BuddySync
+are skipped, so a board edited on Liveblocks after its migration keeps its migrated version.
+To start that board over, delete its rows from the `board_*` tables before re-running, and
+do it before anyone opens the board on BuddySync.
 
 ### Rolling back
 
-Unset `SYNC_BACKEND_BOARDS` (or remove an id) and redeploy: those boards are back on
-Liveblocks. Edits made on BuddySync are **not** copied back, so roll back early rather than
-late.
+There is no flag any more. Rolling back means redeploying an app version from before
+Liveblocks was removed with `SYNC_BACKEND_BOARDS` unset. Edits made on BuddySync are
+**not** copied back to Liveblocks.
 
 ## Testing the image locally
 

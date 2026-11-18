@@ -28,18 +28,20 @@ Shortcuts are ignored while typing in a note, text layer or input.
 | Framework | Next.js 16 (App Router), React 19, TypeScript |
 | Auth and organizations | Clerk |
 | Database (boards, favorites) | Convex |
-| Canvas storage and presence | Liveblocks |
+| Canvas storage and presence | BuddySync: our own WebSocket sync server (`packages/sync-*`), Postgres |
 | UI | Tailwind CSS, shadcn/ui (Radix), lucide-react |
 | State | Zustand |
 
 ## Getting started
 
-Requires Node.js 20.9 or newer, plus Clerk, Convex and Liveblocks accounts.
+Requires Node.js 20.9 or newer, Clerk and Convex accounts, and Docker for the local Postgres used by the sync server.
 
 ```bash
 npm install
-npx convex dev   # terminal 1: links the Convex project and watches convex/
-npm run dev      # terminal 2: http://localhost:3000
+npx convex dev         # terminal 1: links the Convex project and watches convex/
+docker compose up -d   # Postgres for the sync server on localhost:5433
+npm run sync:dev       # terminal 2: the sync server on ws://localhost:8787
+npm run dev            # terminal 3: http://localhost:3000
 ```
 
 ### Environment variables
@@ -50,7 +52,11 @@ Create `.env.local` in the project root:
 | --- | --- |
 | `CONVEX_DEPLOYMENT`, `NEXT_PUBLIC_CONVEX_URL` | Convex deployment (written by `npx convex dev`) |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | Clerk |
-| `LIVEBLOCKS_SECRET` | Liveblocks secret key, used by `/api/liveblocks-auth` |
+| `SYNC_PRIVATE_KEY` | Signs room tokens in `/api/sync-auth` (`npm run sync:keys` makes a pair) |
+| `NEXT_PUBLIC_SYNC_URL` | The sync server, e.g. `ws://localhost:8787` |
+
+The sync server reads `packages/sync-server/.env` (see `.env.example` there): the matching
+`SYNC_PUBLIC_KEY`, `DATABASE_URL` and `ALLOWED_ORIGINS`.
 
 ### Clerk setup
 
@@ -81,11 +87,12 @@ Create `.env.local` in the project root:
 app/
   (dashboard)/        board list, search, favorites, org sidebar
   board/[boardId]/    the canvas and its tools
-  api/liveblocks-auth Liveblocks room authorization
+  api/sync-auth       room tokens for the sync server
 components/           shared UI, modals, shadcn/ui primitives
 convex/               schema, board queries and mutations, org authorization
 hooks/, store/, lib/  client hooks, Zustand store, canvas utilities
-liveblocks.config.ts  Liveblocks client, presence and storage types
+lib/sync/             the canvas's sync hooks and the BuddySync backend behind them
+packages/             sync-core (CRDT document), sync-server, sync-client
 proxy.ts              Clerk route protection
 ```
 
@@ -97,9 +104,9 @@ Deploy the Convex functions and the Next.js app together, since the frontend dep
 npx convex deploy   # push functions and schema to the production deployment
 ```
 
-Then deploy the app (for example on Vercel) with the environment variables above set to their production values.
+Then deploy the app (for example on Vercel) with the environment variables above set to their production values. The sync server runs separately; see [docs/deploy-sync-server.md](docs/deploy-sync-server.md).
 
 ## Limits
 
 - A board holds at most 100 layers.
-- Deleting a board removes it from Convex; its Liveblocks room is left in place but can no longer be opened.
+- Deleting a board removes it from Convex; its sync data is left in Postgres but can no longer be opened.
