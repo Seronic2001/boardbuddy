@@ -1,0 +1,63 @@
+{
+  "label": "room-1x25",
+  "at": "2026-11-18T13:26:07.687Z",
+  "config": {
+    "rooms": 1,
+    "clientsPerRoom": 25,
+    "cursorHz": 30,
+    "editHz": 2,
+    "durationSec": 30,
+    "workers": 1
+  },
+  "connected": 25,
+  "failed": 0,
+  "latencyMs": {
+    "cursor": {
+      "p50": 23.700000000000003,
+      "p95": 47.5,
+      "p99": 54.1,
+      "max": 72.88427734375,
+      "mean": 24.572982378110076,
+      "n": 438288
+    },
+    "edit": {
+      "p50": 52.900000000000006,
+      "p95": 100.60000000000001,
+      "p99": 158.8,
+      "max": 206.062255859375,
+      "mean": 55.89573244573152,
+      "n": 36432
+    },
+    "ack": {
+      "p50": 52,
+      "p95": 99.9,
+      "p99": 157.5,
+      "max": 202.190673828125,
+      "mean": 55.02700134196929,
+      "n": 1518
+    }
+  },
+  "perSecond": {
+    "delivered": 14820.698942389805,
+    "cursors": 750.0164225185574,
+    "edits": 50.02299152598042
+  },
+  "bytesPerClientPerSecond": {
+    "down": 95675.73277277804,
+    "up": 3677.548446429744
+  },
+  "server": {
+    "cpuCores": 0.5445050252906786,
+    "rssBefore": 291966976,
+    "rssPeak": 292118528,
+    "heapBefore": 121218976,
+    "heapPeak": 135192904
+  },
+  "generator": {
+    "busiestThreadUtilization": 0.44364651140092864
+  },
+  "problems": {
+    "unexpectedCloses": 0,
+    "serverErrors": 0
+  }
+}
