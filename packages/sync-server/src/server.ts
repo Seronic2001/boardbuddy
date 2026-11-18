@@ -102,7 +102,10 @@ export async function startSyncServer(options: SyncServerOptions): Promise<SyncS
   const http: Server = createServer((req, res) => {
     if (req.url === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, rooms: rooms.size, connections }));
+      const { rss, heapUsed } = process.memoryUsage();
+      const { user, system } = process.cpuUsage();
+      // Memory and CPU time let a load test see per-room cost and CPU use from outside.
+      res.end(JSON.stringify({ ok: true, rooms: rooms.size, connections, rss, heapUsed, cpuMicros: user + system }));
       return;
     }
     if (req.url === "/admin/revoke" && req.method === "POST") {
