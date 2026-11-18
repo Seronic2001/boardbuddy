@@ -49,6 +49,7 @@ function authenticator(urlOf: () => string, userId: string, opts: { ttlSec?: num
       .setSubject(userId)
       .setIssuer(TOKEN_ISSUER)
       .setAudience(TOKEN_AUDIENCE)
+      .setIssuedAt()
       .setExpirationTime(exp)
       .sign(privateKey);
     return { token, userId, expiresAt: exp * 1000, url: urlOf(), name: userId };

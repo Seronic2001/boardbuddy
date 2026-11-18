@@ -14,11 +14,11 @@ export type RoomTokenClaims = {
   picture?: string;
 };
 
-let signingKey: Promise<CryptoKey> | null = null;
+let signingKey: { pem: string; key: Promise<CryptoKey> } | null = null;
 function getSigningKey(pem: string) {
   // Env vars usually carry PEMs with literal "\n".
-  signingKey ??= importPKCS8(pem.replace(/\\n/g, "\n"), "EdDSA");
-  return signingKey;
+  if (signingKey?.pem !== pem) signingKey = { pem, key: importPKCS8(pem.replace(/\\n/g, "\n"), "EdDSA") };
+  return signingKey.key;
 }
 
 /** Response body for the client's `authenticate` (AuthResult in @boardbuddy/sync-client). */
@@ -50,4 +50,21 @@ export async function issueRoomToken(
     expiresAt: expiresAt * 1000,
     url: config.syncUrl,
   };
+}
+
+export type AdminRequest = { action: "revoke"; orgId?: string; userId?: string };
+
+/**
+ * Short-lived token for the sync server's admin endpoints. It carries the request itself
+ * (verified by verifyAdminToken in packages/sync-server/src/auth.ts) and uses the same
+ * key pair as room tokens, so the sync server needs no extra secret.
+ */
+export async function signAdminToken(request: AdminRequest, privateKey: string): Promise<string> {
+  return new SignJWT({ ...request })
+    .setProtectedHeader({ alg: "EdDSA" })
+    .setIssuer("boardbuddy")
+    .setAudience("buddysync-admin")
+    .setIssuedAt()
+    .setExpirationTime("60s")
+    .sign(await getSigningKey(privateKey));
 }

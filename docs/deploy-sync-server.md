@@ -64,6 +64,27 @@ Set these in the Vercel project and redeploy:
 Every board is still on Liveblocks. Open any board with `?sync=buddysync` to check that
 BuddySync works in production. A board you haven't migrated will look empty there.
 
+### Disconnecting removed members (Clerk webhook)
+
+Without this step, someone removed from an organization stays connected until their room
+token expires (up to 5 minutes). With it, they are disconnected at once.
+
+1. Clerk dashboard → Webhooks → Add endpoint: `https://<your-app>/api/clerk-webhook`.
+   Subscribe to `organizationMembership.deleted`, `organization.deleted` and `user.deleted`.
+2. Copy the endpoint's signing secret into Vercel as `CLERK_WEBHOOK_SIGNING_SECRET` and
+   redeploy.
+3. Optional: `SYNC_ADMIN_URL` if the sync server's HTTP address isn't simply
+   `NEXT_PUBLIC_SYNC_URL` with `wss://` → `https://`.
+
+The route signs a 60-second admin token with `SYNC_PRIVATE_KEY`, and the sync server checks
+it with the public key it already has. No new secret is needed on Fly. Check it with
+Clerk's "Send example" for `organizationMembership.deleted`: the route should answer
+`{"ok":true,"disconnected":0}`, and Fly's logs show a `revoke` event.
+
+Revocations are kept in memory on the single sync machine. They also refuse room tokens
+issued in the next 90 seconds, because Clerk session tokens can carry the old membership
+for about a minute. A member re-added right after removal may have to wait that long.
+
 ## 6. Move boards over
 
 ```sh

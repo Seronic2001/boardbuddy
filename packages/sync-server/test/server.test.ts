@@ -3,7 +3,7 @@ import type { CryptoKey } from "jose";
 import { canonical, CloseCode, readLayer } from "@boardbuddy/sync-core";
 import { MemoryPersister } from "../src/persister";
 import { startSyncServer, type SyncServer } from "../src/server";
-import { keyPair, signToken, TestClient, waitFor, type TokenClaims } from "./helpers";
+import { keyPair, signAdminToken, signToken, TestClient, waitFor, type TokenClaims } from "./helpers";
 
 let privateKey: CryptoKey;
 let publicKey: CryptoKey;
@@ -202,6 +202,72 @@ describe("sync server", () => {
     await waitFor(() => first.received.some((m) => m.t === "presence-state"));
     await client(s, { userId: "user_a", boardId: BOARD }, "sametab01");
     expect(await first.waitForClose()).toBe(CloseCode.Replaced);
+  });
+
+  describe("revoking access", () => {
+    const revoke = (s: SyncServer, token: string) =>
+      fetch(`http://127.0.0.1:${s.port}/admin/revoke`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+
+    it("disconnects a removed member at once and refuses their tokens", async () => {
+      const s = await server();
+      const a = await client(s, { userId: "user_a", boardId: BOARD });
+      const b = await client(s, { userId: "user_b", boardId: BOARD });
+      const elsewhere = await client(s, { userId: "user_b", boardId: "board_2", orgId: "org_2" });
+      await waitFor(() => s.rooms.size === 2);
+      await waitFor(() => a.others.size === 1, 3_000, "presence");
+
+      const res = await revoke(s, await signAdminToken(privateKey, { action: "revoke", orgId: "org_1", userId: "user_b" }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, disconnected: 1 });
+      expect(await b.waitForClose()).toBe(CloseCode.Unauthorized);
+      expect(b.received).toContainEqual({ t: "fatal", code: "UNAUTHORIZED", message: "Access revoked" });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(a.closeCode).toBeNull();
+      expect(elsewhere.closeCode).toBeNull(); // other org untouched
+
+      // The old token, and a fresh one issued while Clerk may still be stale, are refused.
+      await b.connect();
+      expect(await b.waitForClose()).toBe(CloseCode.Unauthorized);
+      const fresh = await client(s, { userId: "user_b", boardId: BOARD });
+      expect(await fresh.waitForClose()).toBe(CloseCode.Unauthorized);
+    });
+
+    it("an org-wide revocation disconnects everyone in that org", async () => {
+      const s = await server();
+      const a = await client(s, { userId: "user_a", boardId: BOARD });
+      const b = await client(s, { userId: "user_b", boardId: "board_x" });
+      await waitFor(() => s.rooms.size === 2);
+      const res = await revoke(s, await signAdminToken(privateKey, { action: "revoke", orgId: "org_1" }));
+      expect(await res.json()).toEqual({ ok: true, disconnected: 2 });
+      expect(await a.waitForClose()).toBe(CloseCode.Unauthorized);
+      expect(await b.waitForClose()).toBe(CloseCode.Unauthorized);
+    });
+
+    it("refuses a reauth with a token issued before the revocation took effect", async () => {
+      const s = await server();
+      const a = await client(s, { userId: "user_a", boardId: BOARD });
+      await waitFor(() => s.rooms.size === 1);
+      // Recorded without closing sessions, to isolate the reauth check.
+      s.revocations.revoke({ orgId: "org_1", userId: "user_a" });
+      a.sendRaw({ t: "reauth", token: await signToken(privateKey, { userId: "user_a", boardId: BOARD }) });
+      expect(await a.waitForClose()).toBe(CloseCode.Unauthorized);
+    });
+
+    it("rejects missing, forged, wrong-audience and empty admin requests", async () => {
+      const s = await server();
+      const a = await client(s, { userId: "user_a", boardId: BOARD });
+      await waitFor(() => s.rooms.size === 1);
+      const attempts = [
+        await fetch(`http://127.0.0.1:${s.port}/admin/revoke`, { method: "POST" }),
+        await revoke(s, await signAdminToken(otherPrivateKey, { action: "revoke", orgId: "org_1" })),
+        await revoke(s, await signToken(privateKey, { userId: "user_a", boardId: BOARD })), // a room token
+        await revoke(s, await signAdminToken(privateKey, { action: "revoke" })),
+        await revoke(s, await signAdminToken(privateKey, { action: "delete", orgId: "org_1" })),
+      ];
+      expect(attempts.map((r) => r.status)).toEqual([401, 401, 401, 401, 401]);
+      await new Promise((r) => setTimeout(r, 100));
+      expect(a.closeCode).toBeNull();
+    });
   });
 
   it("closes the socket on malformed messages", async () => {

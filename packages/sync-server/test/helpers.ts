@@ -7,7 +7,7 @@ import {
   type TransportClientMessage,
   type TransportServerMessage,
 } from "@boardbuddy/sync-core";
-import { TOKEN_AUDIENCE, TOKEN_ISSUER } from "../src/auth";
+import { ADMIN_AUDIENCE, TOKEN_AUDIENCE, TOKEN_ISSUER } from "../src/auth";
 
 export async function keyPair() {
   return generateKeyPair("EdDSA", { crv: "Ed25519" });
@@ -35,6 +35,20 @@ export async function signToken(privateKey: CryptoKey, c: TokenClaims): Promise<
     .setAudience(TOKEN_AUDIENCE)
     .setIssuedAt()
     .setExpirationTime(Math.floor(Date.now() / 1000) + (c.expiresInSec ?? 300))
+    .sign(privateKey);
+}
+
+export async function signAdminToken(
+  privateKey: CryptoKey,
+  claims: Record<string, unknown>,
+  audience = ADMIN_AUDIENCE,
+): Promise<string> {
+  return new SignJWT(claims)
+    .setProtectedHeader({ alg: "EdDSA" })
+    .setIssuer(TOKEN_ISSUER)
+    .setAudience(audience)
+    .setIssuedAt()
+    .setExpirationTime("60s")
     .sign(privateKey);
 }
 

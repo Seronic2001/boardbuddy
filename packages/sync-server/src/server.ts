@@ -1,9 +1,10 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CloseCode, type FatalCode, type TransportServerMessage } from "@boardbuddy/sync-core";
-import { AuthError, verifyRoomToken, type PublicKey, type RoomClaims } from "./auth";
+import { AuthError, verifyAdminToken, verifyRoomToken, type PublicKey, type RoomClaims } from "./auth";
 import type { Persister } from "./persister";
+import { Revocations, type Revocation, type RevocationOptions } from "./revocations";
 import { RoomHost, type RoomHostOptions, type Session } from "./room-host";
 import { parseClientMessage } from "./schema";
 
@@ -17,12 +18,14 @@ export type SyncServerOptions = {
   room?: RoomHostOptions;
   /** Max time between socket open and a valid hello. */
   helloTimeoutMs?: number;
+  revocations?: RevocationOptions;
   log?: (event: string, data: Record<string, unknown>) => void;
 };
 
 export type SyncServer = {
   readonly port: number;
   readonly rooms: RoomManager;
+  readonly revocations: Revocations;
   close(): Promise<void>;
 };
 
@@ -49,6 +52,13 @@ export class RoomManager {
       host.catch(() => this.hosts.delete(boardId));
     }
     return host;
+  }
+
+  /** Closes matching sessions in every loaded room. Returns how many were closed. */
+  revoke(r: Revocation): number {
+    let closed = 0;
+    for (const host of this.live.values()) closed += host.revoke(r);
+    return closed;
   }
 
   async closeAll(): Promise<void> {
@@ -85,6 +95,7 @@ export class RoomManager {
 export async function startSyncServer(options: SyncServerOptions): Promise<SyncServer> {
   const log = options.log ?? (() => {});
   const rooms = new RoomManager(options.persister, { ...options.room, log });
+  const revocations = new Revocations(options.revocations);
   const allowed = new Set(options.allowedOrigins?.filter(Boolean) ?? []);
   let connections = 0;
 
@@ -94,8 +105,34 @@ export async function startSyncServer(options: SyncServerOptions): Promise<SyncS
       res.end(JSON.stringify({ ok: true, rooms: rooms.size, connections }));
       return;
     }
+    if (req.url === "/admin/revoke" && req.method === "POST") {
+      void handleRevoke(req, res);
+      return;
+    }
     res.writeHead(404).end();
   });
+
+  // Called by the Next.js app (Clerk webhook) when someone loses access. The bearer token
+  // is signed with the room-token key and carries the request; no body is needed.
+  async function handleRevoke(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    req.resume();
+    const header = req.headers.authorization ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+    try {
+      const request = await verifyAdminToken(token, options.publicKey);
+      const revocation: Revocation = {
+        ...(request.orgId ? { orgId: request.orgId } : {}),
+        ...(request.userId ? { userId: request.userId } : {}),
+      };
+      revocations.revoke(revocation);
+      const disconnected = rooms.revoke(revocation);
+      log("revoke", { ...revocation, disconnected });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, disconnected }));
+    } catch {
+      res.writeHead(401).end();
+    }
+  }
 
   const wss = new WebSocketServer({
     server: http,
@@ -106,7 +143,7 @@ export async function startSyncServer(options: SyncServerOptions): Promise<SyncS
 
   wss.on("connection", (socket) => {
     connections++;
-    handleConnection(socket, options, rooms, log);
+    handleConnection(socket, options, rooms, revocations, log);
     socket.on("close", () => connections--);
   });
 
@@ -142,6 +179,7 @@ export async function startSyncServer(options: SyncServerOptions): Promise<SyncS
   return {
     port,
     rooms,
+    revocations,
     close: () => (closing ??= close()),
   };
 }
@@ -150,6 +188,7 @@ function handleConnection(
   socket: WebSocket,
   options: SyncServerOptions,
   rooms: RoomManager,
+  revocations: Revocations,
   log: NonNullable<SyncServerOptions["log"]>,
 ): void {
   let session: (Session & { host: RoomHost }) | null = null;
@@ -214,8 +253,11 @@ function handleConnection(
           (err as Error).message,
         );
       }
+      if (revocations.isRevoked(claims)) return fatal("UNAUTHORIZED", CloseCode.Unauthorized, "Access revoked");
       const host = await rooms.get(claims.boardId);
       if (closed) return;
+      // Checked again: a revocation may have landed while the room was loading.
+      if (revocations.isRevoked(claims)) return fatal("UNAUTHORIZED", CloseCode.Unauthorized, "Access revoked");
       clearTimeout(helloTimer);
       session = {
         key: `${claims.userId}~${msg.tab}`,
@@ -237,6 +279,7 @@ function handleConnection(
         if (claims.userId !== session.claims.userId || claims.boardId !== session.claims.boardId) {
           return fatal("UNAUTHORIZED", CloseCode.Unauthorized, "Token is for a different user or board");
         }
+        if (revocations.isRevoked(claims)) return fatal("UNAUTHORIZED", CloseCode.Unauthorized, "Access revoked");
         session.claims = claims;
         armExpiry(claims);
       } catch (err) {

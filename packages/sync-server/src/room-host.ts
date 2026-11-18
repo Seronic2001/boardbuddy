@@ -13,6 +13,7 @@ import {
 } from "@boardbuddy/sync-core";
 import type { RoomClaims } from "./auth";
 import type { Persister } from "./persister";
+import { matches, type Revocation } from "./revocations";
 
 /** One live socket, already authenticated. */
 export interface Session {
@@ -175,6 +176,18 @@ export class RoomHost {
       case "reauth":
         break; // handled by the connection
     }
+  }
+
+  /** Closes every session the revocation covers. Returns how many were closed. */
+  revoke(r: Revocation): number {
+    let closed = 0;
+    for (const session of [...this.sessions.values()]) {
+      if (!matches(r, session.claims)) continue;
+      session.send({ t: "fatal", code: "UNAUTHORIZED", message: "Access revoked" });
+      session.close(CloseCode.Unauthorized, "Access revoked");
+      closed++;
+    }
+    return closed;
   }
 
   /** Writes everything accepted so far, then stops. Used on idle and on shutdown. */

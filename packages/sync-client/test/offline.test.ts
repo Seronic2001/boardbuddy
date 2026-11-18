@@ -47,6 +47,7 @@ function auth(port: () => number, userId: string) {
       .setSubject(userId)
       .setIssuer(TOKEN_ISSUER)
       .setAudience(TOKEN_AUDIENCE)
+      .setIssuedAt()
       .setExpirationTime(exp)
       .sign(privateKey);
     return { token, userId, expiresAt: exp * 1000, url: `ws://127.0.0.1:${port()}` };
