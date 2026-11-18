@@ -6,6 +6,10 @@ import type { NextRequest } from 'next/server'
 // organizationMembership.deleted, organization.deleted and user.deleted. Removed members
 // are disconnected from the sync server at once; a non-2xx reply makes Clerk retry.
 
+// The sync server may be asleep (free tier) and take a while to wake; see revokeSyncAccess.
+// If Clerk stops waiting first it retries, and revoking twice is harmless.
+export const maxDuration = 60
+
 export async function POST(request : NextRequest) {
     let evt
     try {

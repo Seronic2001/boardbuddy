@@ -28,13 +28,14 @@ export function syncAdminUrl(env: { SYNC_ADMIN_URL?: string; NEXT_PUBLIC_SYNC_UR
 
 export async function revokeSyncAccess(
   revocation: Revocation,
-  config: { privateKey: string; adminUrl: string; fetch?: typeof fetch },
+  config: { privateKey: string; adminUrl: string; fetch?: typeof fetch; timeoutMs?: number },
 ): Promise<{ disconnected: number }> {
   const token = await signAdminToken({ action: "revoke", ...revocation }, config.privateKey);
   const res = await (config.fetch ?? fetch)(`${config.adminUrl}/admin/revoke`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(5_000),
+    // A sleeping free-tier sync server takes several seconds (up to about a minute) to wake.
+    signal: AbortSignal.timeout(config.timeoutMs ?? 50_000),
   });
   if (!res.ok) throw new Error(`Sync server refused the revocation: HTTP ${res.status}`);
   const body = (await res.json()) as { disconnected?: number };
