@@ -8,9 +8,13 @@
  * Needs LIVEBLOCKS_SECRET (read from .env.local) and DATABASE_URL (BuddySync's Postgres;
  * set it in the environment or .env.local). Without --write nothing is written anywhere.
  *
+ * --neon-websocket connects to Neon through its serverless driver (WebSockets on port 443)
+ * instead of plain Postgres on 5432, for networks that block outbound 5432.
+ *
  * Safe to re-run: boards that already have BuddySync data are skipped. Migrate a board
  * before its flag points at BuddySync (SYNC_BACKEND_BOARDS); see lib/sync/migrate-liveblocks.ts.
  */
+import { Pool as NeonPool } from "@neondatabase/serverless";
 import { MemoryPersister, PostgresPersister } from "@boardbuddy/sync-server";
 
 import { migrateBoard, type BoardResult, type MigrationTarget } from "@/lib/sync/migrate-liveblocks";
@@ -19,7 +23,7 @@ const API = "https://api.liveblocks.io/v2";
 
 function usage(message?: string): never {
   if (message) console.error(`Error: ${message}\n`);
-  console.error("Usage: npm run sync:migrate-liveblocks -- (--all | <boardId>...) [--write]");
+  console.error("Usage: npm run sync:migrate-liveblocks -- (--all | <boardId>...) [--write] [--neon-websocket]");
   process.exit(1);
 }
 
@@ -75,8 +79,9 @@ async function main() {
   const args = process.argv.slice(2);
   const write = args.includes("--write");
   const all = args.includes("--all");
+  const neonWebsocket = args.includes("--neon-websocket");
   const ids = args.filter((a) => !a.startsWith("--"));
-  const unknown = args.filter((a) => a.startsWith("--") && a !== "--write" && a !== "--all");
+  const unknown = args.filter((a) => a.startsWith("--") && !["--write", "--all", "--neon-websocket"].includes(a));
   if (unknown.length) usage(`unknown option ${unknown.join(", ")}`);
   if (all === ids.length > 0) usage("pass either --all or board ids");
 
@@ -85,7 +90,11 @@ async function main() {
 
   let target: MigrationTarget & { close(): Promise<void> };
   if (process.env.DATABASE_URL) {
-    target = new PostgresPersister(process.env.DATABASE_URL);
+    target = new PostgresPersister(
+      neonWebsocket ? new NeonPool({ connectionString: process.env.DATABASE_URL, max: 4 }) : process.env.DATABASE_URL,
+    );
+  } else if (neonWebsocket) {
+    usage("--neon-websocket needs DATABASE_URL");
   } else if (!write) {
     console.warn("DATABASE_URL is not set: dry run without checking for existing BuddySync data.\n");
     target = new MemoryPersister();

@@ -74,3 +74,20 @@ test("unsent edits survive a reload and sync afterwards", async ({ browser }) =>
   const doc = await expectConverged([alice.page, bob.page]);
   expect(doc.layerIds).toEqual([note]);
 });
+
+test("closing a tab removes the user from others' participants at once", async ({ browser }) => {
+  const boardId = newBoardId();
+  const alice = await openAs(browser, boardId, "alice");
+  // Bob's socket must not go through Playwright's WebSocket routing (openAs), so the close
+  // code the server gets is the one the browser itself sends when a tab closes.
+  const bobContext = await browser.newContext();
+  const bob = await bobContext.newPage();
+  await bob.goto(`/e2e/board/${boardId}?user=bob`);
+  const bobAvatar = alice.page.getByText("b", { exact: true }); // participants show initials
+  await expect(bobAvatar).toBeVisible({ timeout: 30_000 });
+
+  await bob.close();
+  // Well under the server's 5 s grace for connections that drop without saying goodbye.
+  await expect(bobAvatar).toBeHidden({ timeout: 2_000 });
+  await bobContext.close();
+});

@@ -134,18 +134,28 @@ export class RoomHost {
     }
   }
 
-  leave(session: Session): void {
+  /**
+   * `deliberate`: the client closed on purpose (left the board, closed the tab), so others
+   * see it leave at once. Otherwise the presence lingers for presenceGraceMs in case the
+   * connection comes straight back.
+   */
+  leave(session: Session, { deliberate = false }: { deliberate?: boolean } = {}): void {
     if (this.sessions.get(session.key) !== session) return; // already replaced
     this.sessions.delete(session.key);
     this.room.disconnect(session.key);
     const slot = this.presence.get(session.key);
     if (slot) {
-      slot.removeTimer = setTimeout(() => {
+      const remove = () => {
         if (slot.timer) clearTimeout(slot.timer);
         this.presence.delete(session.key);
         this.broadcast({ t: "presence-leave", id: session.key });
-      }, this.opts.presenceGraceMs);
-      slot.removeTimer.unref();
+      };
+      if (deliberate) {
+        remove();
+      } else {
+        slot.removeTimer = setTimeout(remove, this.opts.presenceGraceMs);
+        slot.removeTimer.unref();
+      }
     }
     if (this.sessions.size === 0) this.armIdleTimer();
   }

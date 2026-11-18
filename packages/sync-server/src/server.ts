@@ -226,11 +226,12 @@ function handleConnection(
     });
   });
 
-  socket.on("close", () => {
+  socket.on("close", (code) => {
     closed = true;
     clearTimeout(helloTimer);
     if (expiryTimer) clearTimeout(expiryTimer);
-    if (session) session.host.leave(session);
+    // 1000: the client stopped (left the board). 1001: the tab closed or navigated away.
+    if (session) session.host.leave(session, { deliberate: code === 1000 || code === 1001 });
   });
 
   async function handle(raw: string): Promise<void> {

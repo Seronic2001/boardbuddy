@@ -185,6 +185,26 @@ describe("sync server", () => {
     await waitFor(() => !b.others.has(a.key), 3_000, "presence leave after grace");
   });
 
+  it("drops presence at once on a deliberate close, after the grace period otherwise", async () => {
+    const s = await server(undefined, { presenceGraceMs: 600 });
+    const watcher = await client(s, { userId: "user_w", boardId: BOARD });
+    const left = await client(s, { userId: "user_a", boardId: BOARD });
+    const closedTab = await client(s, { userId: "user_b", boardId: BOARD });
+    const dropped = await client(s, { userId: "user_c", boardId: BOARD });
+    await waitFor(() => watcher.others.size === 3, 3_000, "presence join");
+
+    await left.close(1000); // left the board
+    await closedTab.close(1001); // closed the tab
+    await waitFor(() => !watcher.others.has(left.key) && !watcher.others.has(closedTab.key), 200, "immediate leave");
+
+    const droppedAt = Date.now();
+    await dropped.terminate(); // network gone: might come straight back
+    await new Promise((r) => setTimeout(r, 300));
+    expect(watcher.others.has(dropped.key)).toBe(true);
+    await waitFor(() => !watcher.others.has(dropped.key), 3_000, "leave after grace");
+    expect(Date.now() - droppedAt).toBeGreaterThanOrEqual(550);
+  });
+
   it("throttles presence to one message per interval per user, keeping the latest value", async () => {
     const s = await server(undefined, { presenceIntervalMs: 100 });
     const a = await client(s, { userId: "user_a", boardId: BOARD });

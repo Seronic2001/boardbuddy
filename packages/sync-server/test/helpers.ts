@@ -108,11 +108,20 @@ export class TestClient {
     this.sendRaw({ t: "presence", data });
   }
 
-  close(): Promise<void> {
+  close(code?: number): Promise<void> {
     if (this.socket.readyState === WebSocket.CLOSED) return Promise.resolve();
     return new Promise((resolve) => {
       this.socket.once("close", () => resolve());
-      this.socket.close();
+      this.socket.close(code);
+    });
+  }
+
+  /** Drop the connection without a close handshake, like a lost network. */
+  terminate(): Promise<void> {
+    if (this.socket.readyState === WebSocket.CLOSED) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.socket.once("close", () => resolve());
+      this.socket.terminate();
     });
   }
 
