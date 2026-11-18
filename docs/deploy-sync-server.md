@@ -1,55 +1,72 @@
 # Deploying the BuddySync sync server
 
 The Next.js app stays on Vercel. The sync server is a long-running WebSocket process, so it
-runs on Fly.io from `packages/sync-server/Dockerfile`, configured by `fly.toml` in the
-repository root. Boards move over one at a time with `SYNC_BACKEND_BOARDS`.
+runs on **Render** (free web service) from `packages/sync-server/Dockerfile`, configured
+by `render.yaml` in the repository root, with **Neon** (free Postgres) for storage. Boards
+move over one at a time with `SYNC_BACKEND_BOARDS`.
 
-**Run exactly one machine.** Rooms live in one process's memory and there is no
-cross-node room ownership yet, so two machines would corrupt boards. Always deploy with
-`--ha=false`, and never use the bluegreen or canary strategies.
+What the free tiers mean here:
 
-## 1. Postgres
+- Render's free service **sleeps after 15 minutes without traffic** and takes about a minute
+  to wake. The first person to open a board after a quiet spell sees "Reconnecting…" for
+  that minute. Nothing is lost: rooms reload from Postgres, and clients resend anything
+  unacknowledged. A paid instance (or any always-on host) removes the wait.
+- Render's free workspace includes 5 GB of bandwidth a month, and Neon's free plan 1 GB of
+  storage per project. That's plenty for a team whiteboard; check usage if it grows.
 
-Any Postgres 14+ works (Fly Managed Postgres, Neon, Supabase...). Note its connection
-string, with `?sslmode=require` if the provider needs TLS. The schema is applied on every
-deploy by the release command, so there is nothing to run by hand.
+**Run one instance.** Rooms live in one process's memory and there is no cross-node room
+ownership yet. The free plan runs one instance. Don't scale it up on a paid plan either.
+The brief overlap of old and new instance during a deploy is safe: Postgres's
+`(board_id, seq)` primary key rejects the second writer of any sequence number, so at worst
+a room reloads (see the "two instances on one board" tests in `postgres.test.ts`).
+
+## 1. Postgres (Neon)
+
+Create a free Neon project in the region nearest your Render region (for example AWS
+`us-west-2` for Render's Oregon). Copy the **direct** connection string, not the pooled
+one: the sync server keeps its own small pool. It looks like
+`postgres://user:password@ep-...us-west-2.aws.neon.tech/neondb?sslmode=require`.
+
+The schema is applied by the container every time it starts, so there is nothing to run
+by hand.
 
 ## 2. A production key pair
 
 ```sh
-npm run sync:keys
+npx tsx packages/sync-server/scripts/generate-keys.ts > .env.sync-prod.local
 ```
 
-Make a new pair; don't reuse the one in your local `.env` files. The **private** key goes
-to Vercel (it signs room tokens), the **public** key to Fly (it only verifies them).
+Make a new pair; don't reuse the one in your local `.env` files. `.env.sync-prod.local` is
+ignored by git. The **private** key goes to Vercel (it signs room tokens), the **public**
+key to Render (it only verifies them).
 
-## 3. Create the app and set secrets
+## 3. Create the service on Render
 
-Install `flyctl` and run `fly auth login`. Then, from the repository root:
+The Blueprint deploys from `master`, so merge the BuddySync branch first. That is safe:
+every board stays on Liveblocks until step 5.
+
+1. Render dashboard → New → Blueprint → connect the GitHub repository. Render reads
+   `render.yaml` and proposes the `boardbuddy-sync` service (free plan).
+2. Fill in the three values it asks for:
+   - `SYNC_PUBLIC_KEY`: the `SYNC_PUBLIC_KEY` value from `.env.sync-prod.local`, without
+     the surrounding quotes and with the literal `\n`s as they are.
+   - `DATABASE_URL`: the Neon direct connection string from step 1.
+   - `ALLOWED_ORIGINS`: your site's origin, for example `https://boardbuddy.example.com`
+     (comma-separate several, such as a preview domain).
+3. Apply. The first build takes a few minutes.
+
+## 4. Check it
 
 ```sh
-fly apps create boardbuddy-sync         # or another name; update `app` in fly.toml to match
-fly secrets set --stage \
-  SYNC_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----" \
-  DATABASE_URL="postgres://..."
-```
-
-Set `ALLOWED_ORIGINS` in `fly.toml` to your site's origin (for example
-`https://boardbuddy.example.com`).
-
-## 4. Deploy
-
-```sh
-fly deploy --ha=false
-fly scale count 1 --yes                 # make sure it's one machine
-curl https://boardbuddy-sync.fly.dev/healthz
+curl https://boardbuddy-sync.onrender.com/healthz    # your service's URL from the dashboard
 # {"ok":true,"rooms":0,"connections":0}
 ```
 
-Later deploys are just `fly deploy --ha=false`. On each deploy the old machine gets
-SIGTERM, saves every room's pending writes, and closes its sockets. Clients show
-"Reconnecting…", reconnect to the new version within seconds, and resend anything that
-wasn't acknowledged, so no edits are lost.
+The service log shows `migrations up to date` and then a `listening` event with
+`"storage":"postgres"`. Later deploys happen on every push to `master` that touches the
+server. On each deploy the old instance gets SIGTERM, saves every room's pending writes,
+and closes its sockets. Clients show "Reconnecting…", reconnect to the new version within
+seconds, and resend anything that wasn't acknowledged.
 
 ## 5. Point the app at it (Vercel)
 
@@ -58,7 +75,7 @@ Set these in the Vercel project and redeploy:
 | Variable | Value |
 |---|---|
 | `SYNC_PRIVATE_KEY` | the private key from step 2 |
-| `NEXT_PUBLIC_SYNC_URL` | `wss://boardbuddy-sync.fly.dev` |
+| `NEXT_PUBLIC_SYNC_URL` | `wss://boardbuddy-sync.onrender.com` (your service's host) |
 | `SYNC_BACKEND_BOARDS` | leave unset for now |
 
 Every board is still on Liveblocks. Open any board with `?sync=buddysync` to check that
@@ -77,11 +94,12 @@ token expires (up to 5 minutes). With it, they are disconnected at once.
    `NEXT_PUBLIC_SYNC_URL` with `wss://` → `https://`.
 
 The route signs a 60-second admin token with `SYNC_PRIVATE_KEY`, and the sync server checks
-it with the public key it already has. No new secret is needed on Fly. Check it with
+it with the public key it already has. No new secret is needed on Render. Check it with
 Clerk's "Send example" for `organizationMembership.deleted`: the route should answer
-`{"ok":true,"disconnected":0}`, and Fly's logs show a `revoke` event.
+`{"ok":true,"disconnected":0}`, and the Render log shows a `revoke` event.
 
-Revocations are kept in memory on the single sync machine. They also refuse room tokens
+Revocations are kept in memory on the single sync instance. A restart or wake-up forgets
+them, by which time /api/sync-auth refuses the removed member anyway. They also refuse room tokens
 issued in the next 90 seconds, because Clerk session tokens can carry the old membership
 for about a minute. A member re-added right after removal may have to wait that long.
 
@@ -118,13 +136,11 @@ late.
 ```sh
 docker compose up -d                    # Postgres on localhost:5433
 docker build -f packages/sync-server/Dockerfile -t buddysync .
-docker run --rm --network boardbuddy_default \
-  -e DATABASE_URL=postgres://buddysync:buddysync@postgres:5432/buddysync \
-  buddysync node dist/migrate.mjs
 docker run --rm --network boardbuddy_default -p 8787:8080 \
   -e DATABASE_URL=postgres://buddysync:buddysync@postgres:5432/buddysync \
   -e SYNC_PUBLIC_KEY="$(grep '^SYNC_PUBLIC_KEY=' packages/sync-server/.env | cut -d= -f2- | tr -d '\"')" \
   buddysync
 ```
 
-With `npm run dev` running, the app and `npm run test:e2e` then use the container.
+The container applies migrations, then listens. With `npm run dev` running, the app and
+`npm run test:e2e` then use it.

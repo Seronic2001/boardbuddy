@@ -1,7 +1,7 @@
 // Bundles the server and the migration runner into dist/ as standalone ESM files, so the
 // production image needs no node_modules, TypeScript or tsx.
 //   dist/main.mjs     the sync server
-//   dist/migrate.mjs  applies ../migrations/*.sql (run as Fly's release_command)
+//   dist/migrate.mjs  applies ../migrations/*.sql (the image runs it on start)
 import { build } from "esbuild";
 
 await build({

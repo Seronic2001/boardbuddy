@@ -106,6 +106,73 @@ describe.skipIf(!url)("PostgresPersister", () => {
     expect(restored.durableCseq("~server")).toBe(0);
   });
 
+  describe("two instances on one board (a deploy that briefly overlaps old and new)", () => {
+    const A = "user_a~tab00001";
+    const B = "user_b~tab00002";
+    const set = (client: string, v: number): Op => ({ kind: "set", layer: "l", field: "x", v, ts: { wall: 1_000 + v, counter: 0, client } });
+
+    async function seeded() {
+      const b = board();
+      const create: Op = { kind: "create", layer: "l", fields: { x: 0 }, ts: { wall: 1_000, counter: 0, client: A } };
+      await db.write(b, { entries: [{ seq: 1, client: A, cseq: 1, op: create }], cseqs: { [A]: 1 } });
+      return b;
+    }
+
+    it("can't fork the log: whoever writes a seq second fails, and nothing of its batch is stored", async () => {
+      const b = await seeded();
+      const state = await db.load(b);
+      const oldRoom = new Room(state);
+      const newRoom = new Room(state);
+      oldRoom.connect(A, () => {});
+      newRoom.connect(B, () => {});
+      oldRoom.receive(A, { t: "ops", batch: [{ cseq: 2, op: set(A, 2) }] });
+      newRoom.receive(B, { t: "ops", batch: [{ cseq: 1, op: set(B, 3) }] });
+      const fromOld = oldRoom.takeBatch()!;
+      const fromNew = newRoom.takeBatch()!;
+      expect(fromOld.entries[0]!.seq).toBe(2);
+      expect(fromNew.entries[0]!.seq).toBe(2); // both picked the same next seq
+
+      await db.write(b, fromOld);
+      oldRoom.commit(fromOld);
+      await expect(db.write(b, fromNew)).rejects.toThrow(); // primary key (board_id, seq)
+
+      const after = await db.load(b);
+      expect(after.entries.map((e) => [e.seq, e.client])).toEqual([[1, A], [2, A]]);
+      expect(after.cseqs).toEqual({ [A]: 2 }); // B was never acked, so it still holds its op
+
+      // B reconnects to a freshly loaded room and resends: it lands after A's op.
+      const reloaded = new Room(after);
+      reloaded.connect(B, () => {});
+      reloaded.receive(B, { t: "hello", lastSeq: 1, pending: [{ cseq: 1, op: set(B, 3) }] });
+      const retry = reloaded.takeBatch()!;
+      await db.write(b, retry);
+      reloaded.commit(retry);
+      expect(reloaded.seq).toBe(3);
+      expect(reloaded.committedDoc.layers.get("l")!.fields.x!.v).toBe(3);
+    });
+
+    it("a stale instance's idle snapshot can't roll the board back", async () => {
+      const b = await seeded();
+      const state = await db.load(b);
+      const stale = new Room(state); // loaded at seq 1, then stops seeing writes
+      const live = new Room(state);
+      live.connect(A, () => {});
+      live.receive(A, { t: "ops", batch: [{ cseq: 2, op: set(A, 2) }, { cseq: 3, op: set(A, 3) }] });
+      const batch = live.takeBatch()!;
+      await db.write(b, batch);
+      live.commit(batch);
+
+      const idle = stale.takeBatch({ compact: true })!; // snapshot at its own head, seq 1
+      expect(idle.entries).toEqual([]);
+      await db.write(b, idle);
+
+      const restored = new Room(await db.load(b));
+      expect(restored.seq).toBe(3);
+      expect(restored.committedDoc.layers.get("l")!.fields.x!.v).toBe(3);
+      expect(restored.durableCseq(A)).toBe(3);
+    });
+  });
+
   it("a failed batch leaves nothing behind (atomic)", async () => {
     const b = board();
     await db.write(b, { entries: [entry(1)], cseqs: { "user_a~tab00001": 1 } });

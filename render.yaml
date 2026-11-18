@@ -1,0 +1,32 @@
+# Render Blueprint for the BuddySync sync server (the Next.js app stays on Vercel).
+# Setup and first deploy: docs/deploy-sync-server.md.
+#
+# The free plan runs one instance and sleeps after 15 minutes without traffic. On wake,
+# rooms reload from Postgres and clients reconnect and resend anything unacknowledged.
+# Do not scale past one instance: rooms live in one process's memory and there is no
+# cross-node room ownership yet. (The brief overlap during a deploy is safe: Postgres's
+# (board_id, seq) primary key rejects the second writer of any seq.)
+services:
+  - type: web
+    name: boardbuddy-sync
+    runtime: docker
+    plan: free
+    region: oregon # pick the region nearest your users (and your Neon database)
+    branch: master
+    dockerfilePath: ./packages/sync-server/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    # Only rebuild when the server or the code it bundles changes.
+    buildFilter:
+      paths:
+        - packages/sync-server/**
+        - packages/sync-core/**
+        - package-lock.json
+    envVars:
+      # Values are entered in the Render dashboard when the Blueprint is created.
+      - key: SYNC_PUBLIC_KEY
+        sync: false
+      - key: DATABASE_URL # Neon: the direct (non-pooled) connection string
+        sync: false
+      - key: ALLOWED_ORIGINS # your site, e.g. https://boardbuddy.example.com
+        sync: false
