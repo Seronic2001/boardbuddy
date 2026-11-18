@@ -54,6 +54,14 @@ const pendingOps = z
   .array(z.object({ cseq: z.number().int().positive(), op }))
   .max(1_000);
 
+const MAX_PRESENCE_KEY = 32;
+const MAX_PRESENCE_KEYS = 16;
+
+/** Exported so tests can check the hand-written fast path below against it. */
+export const presenceData = z
+  .record(z.string().max(MAX_PRESENCE_KEY), json(1))
+  .refine((o) => Object.keys(o).length <= MAX_PRESENCE_KEYS);
+
 const clientMessage = z.discriminatedUnion("t", [
   z.object({
     t: z.literal("hello"),
@@ -63,12 +71,10 @@ const clientMessage = z.discriminatedUnion("t", [
     pending: pendingOps,
     lastTs: hlc.optional(),
     nextCseq: z.number().int().positive().optional(),
+    batchPresence: z.boolean().optional(),
   }),
   z.object({ t: z.literal("ops"), batch: pendingOps }),
-  z.object({
-    t: z.literal("presence"),
-    data: z.record(z.string().max(32), json(1)).refine((o) => Object.keys(o).length <= 16),
-  }),
+  z.object({ t: z.literal("presence"), data: presenceData }),
   z.object({ t: z.literal("reauth"), token: z.string().max(4_096) }),
 ]);
 
@@ -79,6 +85,38 @@ export function parseClientMessage(raw: string): TransportClientMessage | null {
   } catch {
     return null;
   }
+  // Cursor updates are nearly all traffic (30/s per user), and zod was about a fifth of the
+  // server's CPU under load. They get a hand-written check with the same rules.
+  if (isPlainObject(data) && data.t === "presence") {
+    return isPresenceData(data.data) ? { t: "presence", data: data.data } : null;
+  }
   const result = clientMessage.safeParse(data);
   return result.success ? (result.data as TransportClientMessage) : null;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Same rules as `presenceData`. */
+export function isPresenceData(v: unknown): v is Record<string, unknown> {
+  if (!isPlainObject(v)) return false;
+  const keys = Object.keys(v);
+  if (keys.length > MAX_PRESENCE_KEYS) return false;
+  for (const k of keys) if (k.length > MAX_PRESENCE_KEY || !isJson(v[k], 1)) return false;
+  return true;
+}
+
+/** Same rules as `json(depth)`. */
+function isJson(v: unknown, depth: number): boolean {
+  if (v === null || typeof v === "boolean") return true;
+  if (typeof v === "number") return Number.isFinite(v);
+  if (typeof v === "string") return v.length <= MAX_STRING;
+  if (depth >= MAX_DEPTH) return false;
+  if (Array.isArray(v)) return v.length <= MAX_ARRAY && v.every((x) => isJson(x, depth + 1));
+  if (!isPlainObject(v)) return false;
+  const keys = Object.keys(v);
+  if (keys.length > MAX_KEYS) return false;
+  for (const k of keys) if (k.length > 64 || !isJson(v[k], depth + 1)) return false;
+  return true;
 }

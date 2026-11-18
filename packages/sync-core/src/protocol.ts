@@ -94,6 +94,8 @@ export type TransportClientMessage =
       readonly pending: readonly PendingOp[];
       readonly lastTs?: HLC;
       readonly nextCseq?: number;
+      /** The client understands `presence-batch`. Older clients get one `presence` per update. */
+      readonly batchPresence?: boolean;
     }
   | { readonly t: "ops"; readonly batch: readonly PendingOp[] }
   /** Partial update, merged into this connection's presence. */
@@ -114,6 +116,12 @@ export type TransportServerMessage =
   | { readonly t: "presence-state"; readonly self: string; readonly others: readonly PresenceEntry[] }
   | { readonly t: "presence-join"; readonly entry: PresenceEntry }
   | { readonly t: "presence"; readonly id: string; readonly data: PresenceData }
+  /**
+   * Every presence change in the room since the last batch, at most one batch per presence
+   * interval. The same message goes to everyone, so it may include the recipient's own id:
+   * skip it.
+   */
+  | { readonly t: "presence-batch"; readonly updates: readonly { readonly id: string; readonly data: PresenceData }[] }
   | { readonly t: "presence-leave"; readonly id: string }
   | { readonly t: "read-only"; readonly cseq: number }
   /** The server closes the socket right after this. */

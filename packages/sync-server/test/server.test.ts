@@ -32,8 +32,9 @@ async function server(persister = new MemoryPersister(), room = {}) {
   return s;
 }
 
-async function client(s: SyncServer, claims: TokenClaims, tab?: string) {
+async function client(s: SyncServer, claims: TokenClaims, tab?: string, opts: { batchPresence?: boolean } = {}) {
   const c = new TestClient(`ws://127.0.0.1:${s.port}`, await signToken(privateKey, claims), claims.userId, tab);
+  c.batchPresence = opts.batchPresence ?? false;
   open.push(c);
   return c.connect();
 }
@@ -214,6 +215,36 @@ describe("sync server", () => {
     await waitFor(() => (b.others.get(a.key)?.data.cursor as { x: number } | undefined)?.x === 49);
     const count = b.received.filter((m) => m.t === "presence").length;
     expect(count).toBeLessThanOrEqual(3);
+  });
+
+  it("batches presence for clients that ask, and keeps per-update messages for older clients", async () => {
+    const s = await server(undefined, { presenceIntervalMs: 100 });
+    const batched = { batchPresence: true };
+    const a = await client(s, { userId: "user_a", boardId: BOARD }, undefined, batched);
+    const b = await client(s, { userId: "user_b", boardId: BOARD }, undefined, batched);
+    const old = await client(s, { userId: "user_old", boardId: BOARD });
+    await waitFor(() => a.others.size === 2 && b.others.size === 2 && old.others.size === 2, 3_000, "presence join");
+    // Let the throttle window from any earlier presence pass, so both updates share a batch.
+    await new Promise((r) => setTimeout(r, 150));
+    for (const c of [a, b, old]) c.received.length = 0;
+
+    a.presence({ cursor: { x: 1, y: 1 } });
+    b.presence({ cursor: { x: 2, y: 2 } });
+    old.presence({ cursor: { x: 3, y: 3 } });
+    await waitFor(() => (a.others.get(old.key)?.data.cursor as { x: number } | undefined)?.x === 3, 3_000, "a sees old");
+    await waitFor(() => (old.others.get(b.key)?.data.cursor as { x: number } | undefined)?.x === 2, 3_000, "old sees b");
+    await waitFor(() => (b.others.get(a.key)?.data.cursor as { x: number } | undefined)?.x === 1, 3_000, "b sees a");
+
+    // The first update goes out at once (a alone); b's and old's share the next batch.
+    const batches = a.received.filter((m) => m.t === "presence-batch");
+    expect(batches.map((m) => m.updates.map((u) => u.id))).toEqual([[a.key], [b.key, old.key]]);
+    expect(a.received.some((m) => m.t === "presence")).toBe(false);
+    // The older client gets one message per other user, and never its own.
+    const singles = old.received.filter((m) => m.t === "presence");
+    expect(singles.map((m) => m.id).sort()).toEqual([a.key, b.key].sort());
+    expect(old.received.some((m) => m.t === "presence-batch")).toBe(false);
+    // A client ignores its own entry in a batch.
+    expect(a.others.has(a.key)).toBe(false);
   });
 
   it("a second connection from the same tab replaces the first", async () => {

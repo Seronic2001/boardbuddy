@@ -197,9 +197,10 @@ function handleConnection(
   // Messages are handled strictly in order, even across the async auth and room load.
   let chain: Promise<void> = Promise.resolve();
 
-  const send = (msg: TransportServerMessage) => {
-    if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
+  const sendText = (text: string) => {
+    if (socket.readyState === socket.OPEN) socket.send(text);
   };
+  const send = (msg: TransportServerMessage) => sendText(JSON.stringify(msg));
   const fatal = (code: FatalCode, closeCode: number, message: string) => {
     send({ t: "fatal", code, message });
     socket.close(closeCode, message);
@@ -265,6 +266,8 @@ function handleConnection(
         claims,
         host,
         send,
+        sendText,
+        batchPresence: msg.batchPresence === true,
         close: (code, reason) => socket.close(code, reason),
       };
       armExpiry(claims);
