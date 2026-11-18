@@ -1,0 +1,13 @@
+# Only the sync server is built with Docker (packages/sync-server/Dockerfile).
+**/node_modules
+**/dist
+.next
+.git
+.env*
+**/.env
+**/.env.*
+!**/.env.example
+test-results
+playwright-report
+coverage
+*.md

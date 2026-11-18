@@ -1,0 +1,27 @@
+{
+  "name": "@boardbuddy/sync-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser side of BuddySync: connection lifecycle, auth, reconnect, presence.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@boardbuddy/sync-core": "*"
+  },
+  "devDependencies": {
+    "@boardbuddy/sync-server": "*",
+    "@types/node": "^22",
+    "fake-indexeddb": "^6.2.8",
+    "jose": "^6.2.17",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

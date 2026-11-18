@@ -37,6 +37,7 @@ const ColorButton = ({
 }: ColorButtonProps) => {
   return (
     <button
+      aria-label={`Color ${colorToCss(color)}`}
       className="w-8 h-8 items-center flex justify-center hover:opacity-75 transition"
       onClick={() => onClick(color)}
     >

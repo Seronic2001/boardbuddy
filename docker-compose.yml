@@ -1,0 +1,20 @@
+# Local infrastructure for the BuddySync server.
+#   docker compose up -d        then   npm run migrate -w @boardbuddy/sync-server
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: buddysync
+      POSTGRES_PASSWORD: buddysync
+      POSTGRES_DB: buddysync
+    ports:
+      - "5433:5432" # 5433 so it doesn't clash with a locally installed Postgres
+    volumes:
+      - buddysync-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U buddysync"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+volumes:
+  buddysync-pg:

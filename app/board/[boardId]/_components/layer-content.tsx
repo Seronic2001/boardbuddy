@@ -3,7 +3,7 @@ import { Kalam } from "next/font/google";
 import ContentEditable, { ContentEditableEvent } from "react-contenteditable";
 
 import { cn } from "@/lib/utils";
-import { useMutation } from "@/liveblocks.config";
+import { useMutation } from "@/lib/sync";
 
 const font = Kalam({
   subsets: ["latin"],

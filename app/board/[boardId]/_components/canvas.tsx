@@ -1,8 +1,7 @@
 "use client";
 
 import { nanoid } from "nanoid";
-import { useCallback, useMemo, useState, useEffect, useRef } from "react";
-import { LiveObject } from "@liveblocks/client";
+import { type ReactNode, useCallback, useMemo, useState, useEffect, useRef } from "react";
 
 import { 
   useHistory, 
@@ -12,7 +11,7 @@ import {
   useStorage,
   useOthersMapped,
   useSelf,
-} from "@/liveblocks.config";
+} from "@/lib/sync";
 import { 
   colorToCss,
   connectionIdToColor, 
@@ -27,6 +26,7 @@ import {
   CanvasState, 
   Color,
   LayerType,
+  Layer,
   Point,
   Side,
   XYWH,
@@ -42,6 +42,7 @@ import { LayerPreview } from "./layer-preview";
 import { SelectionBox } from "./selection-box";
 import { SelectionTools } from "./selection-tools";
 import { CursorPresence } from "./cursor-presence";
+import { ConnectionStatus } from "./connection-status";
 
 const MAX_LAYERS = 100;
 // Pen points closer than this (in px) to the previous one are dropped.
@@ -49,10 +50,13 @@ const MIN_PEN_POINT_DISTANCE = 2;
 
 interface CanvasProps {
   boardId: string;
+  /** Replaces the board title bar (which reads the board from Convex). Used by /e2e. */
+  header?: ReactNode;
 };
 
 export const Canvas = ({
   boardId,
+  header,
 }: CanvasProps) => {
   const layerIds = useStorage((root) => root.layerIds);
 
@@ -91,14 +95,14 @@ export const Canvas = ({
 
     const liveLayerIds = storage.get("layerIds");
     const layerId = nanoid();
-    const layer = new LiveObject({
+    const layer: Layer = {
       type: layerType,
       x: position.x,
       y: position.y,
       height: 100,
       width: 100,
       fill: lastUsedColor,
-    });
+    };
 
     liveLayerIds.push(layerId);
     liveLayers.set(layerId, layer);
@@ -224,10 +228,10 @@ export const Canvas = ({
     const id = nanoid();
     liveLayers.set(
       id,
-      new LiveObject(penPointsToPathLayer(
+      penPointsToPathLayer(
         pencilDraft,
         lastUsedColor,
-      )),
+      ),
     );
 
     const liveLayerIds = storage.get("layerIds");
@@ -348,8 +352,8 @@ export const Canvas = ({
   }, [camera, canvasState.mode, setCanvasState, startDrawing]);
 
   const onPointerUp = useMutation((
-    {},
-    e
+    _context,
+    e: React.PointerEvent,
   ) => {
     const point = pointerEventToCanvasPoint(e, camera);
 
@@ -474,8 +478,9 @@ export const Canvas = ({
     <main
       className="h-full w-full relative bg-neutral-100 touch-none"
     >
-      <Info boardId={boardId} />
+      {header ?? <Info boardId={boardId} />}
       <Participants />
+      <ConnectionStatus />
       <Toolbar
         canvasState={canvasState}
         setCanvasState={setCanvasState}
