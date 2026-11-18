@@ -11,7 +11,7 @@ services:
     name: boardbuddy-sync
     runtime: docker
     plan: free
-    region: oregon # pick the region nearest your users (and your Neon database)
+    region: singapore # nearest the users; the Neon database is in aws-ap-southeast-1
     branch: master
     dockerfilePath: ./packages/sync-server/Dockerfile
     dockerContext: .

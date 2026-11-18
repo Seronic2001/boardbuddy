@@ -22,10 +22,12 @@ a room reloads (see the "two instances on one board" tests in `postgres.test.ts`
 
 ## 1. Postgres (Neon)
 
-Create a free Neon project in the region nearest your Render region (for example AWS
-`us-west-2` for Render's Oregon). Copy the **direct** connection string, not the pooled
+Create a free Neon project in the region nearest your Render region (`render.yaml` uses
+Singapore, so AWS `ap-southeast-1`). With the Neon CLI:
+`neon projects create --name boardbuddy-sync --region-id aws-ap-southeast-1`, then
+`neon connection-string --project-id <id>` prints the direct string. Copy the **direct** connection string, not the pooled
 one: the sync server keeps its own small pool. It looks like
-`postgres://user:password@ep-...us-west-2.aws.neon.tech/neondb?sslmode=require`.
+`postgres://user:password@ep-...ap-southeast-1.aws.neon.tech/neondb?sslmode=require`.
 
 The schema is applied by the container every time it starts, so there is nothing to run
 by hand.

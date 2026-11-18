@@ -46,3 +46,6 @@ packages/*/.env
 
 # sync server bundle
 packages/sync-server/dist/
+
+# Vercel CLI project link
+.vercel
