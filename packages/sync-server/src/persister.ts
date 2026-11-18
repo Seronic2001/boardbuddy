@@ -10,6 +10,13 @@ export interface Persister {
   close(): Promise<void>;
 }
 
+export type BoardBatch = { readonly boardId: string; readonly batch: PersistBatch };
+
+/** Storage that can make several boards' batches durable in one atomic step. */
+export interface MultiBoardPersister extends Persister {
+  writeMany(items: readonly BoardBatch[]): Promise<void>;
+}
+
 /** For tests and local development without a database. Data is lost on restart. */
 export class MemoryPersister implements Persister {
   private readonly boards = new Map<string, InMemoryPersister>();

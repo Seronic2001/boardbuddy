@@ -1,6 +1,6 @@
 import pg from "pg";
 import type { DocJSON, DurableState, HLC, LogEntry, Op, PersistBatch, Snapshot } from "@boardbuddy/sync-core";
-import type { Persister } from "./persister";
+import type { BoardBatch, Persister } from "./persister";
 
 /** The slice of pg's Pool this persister uses, so drop-in drivers (Neon's) fit too. */
 export interface SqlPool {
@@ -81,34 +81,46 @@ export class PostgresPersister implements Persister {
   }
 
   async write(boardId: string, batch: PersistBatch): Promise<void> {
+    await this.writeMany([{ boardId, batch }]);
+  }
+
+  /**
+   * Writes several boards' batches in one transaction: all of them become durable, or none
+   * do. Each board may appear at most once (a room has one write in flight at a time).
+   */
+  async writeMany(items: readonly BoardBatch[]): Promise<void> {
+    if (new Set(items.map((i) => i.boardId)).size !== items.length) {
+      throw new Error("writeMany: a board appears twice in one transaction");
+    }
+    const ops = items.flatMap(({ boardId, batch }) =>
+      batch.entries.map((e) => ({ board_id: boardId, seq: e.seq, client_id: e.client, cseq: e.cseq, op: e.op })),
+    );
+    const cseqs = items.flatMap(({ boardId, batch }) =>
+      Object.entries(batch.cseqs).map(([client_id, cseq]) => ({ board_id: boardId, client_id, cseq })),
+    );
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      if (batch.entries.length > 0) {
+      if (ops.length > 0) {
         await client.query(
           `insert into board_ops (board_id, seq, client_id, cseq, op)
-           select $1, x.seq, x.client_id, x.cseq, x.op
-           from jsonb_to_recordset($2::jsonb) as x(seq bigint, client_id text, cseq bigint, op jsonb)`,
-          [
-            boardId,
-            JSON.stringify(
-              batch.entries.map((e) => ({ seq: e.seq, client_id: e.client, cseq: e.cseq, op: e.op })),
-            ),
-          ],
+           select x.board_id, x.seq, x.client_id, x.cseq, x.op
+           from jsonb_to_recordset($1::jsonb) as x(board_id text, seq bigint, client_id text, cseq bigint, op jsonb)`,
+          [JSON.stringify(ops)],
         );
       }
-      const cseqs = Object.entries(batch.cseqs);
       if (cseqs.length > 0) {
         await client.query(
           `insert into board_client_cseqs (board_id, client_id, cseq)
-           select $1, x.client_id, x.cseq
-           from jsonb_to_recordset($2::jsonb) as x(client_id text, cseq bigint)
+           select x.board_id, x.client_id, x.cseq
+           from jsonb_to_recordset($1::jsonb) as x(board_id text, client_id text, cseq bigint)
            on conflict (board_id, client_id)
            do update set cseq = greatest(board_client_cseqs.cseq, excluded.cseq)`,
-          [boardId, JSON.stringify(cseqs.map(([client_id, cseq]) => ({ client_id, cseq })))],
+          [JSON.stringify(cseqs)],
         );
       }
-      if (batch.snapshot) {
+      for (const { boardId, batch } of items) {
+        if (!batch.snapshot) continue;
         const { seq, doc, cseqs: snapCseqs, headTs } = batch.snapshot;
         await client.query(
           `insert into board_snapshots (board_id, seq, state, cseqs, head_ts) values ($1, $2, $3, $4, $5)

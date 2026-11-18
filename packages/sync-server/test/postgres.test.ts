@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Room, type LogEntry, type Op } from "@boardbuddy/sync-core";
+import { GroupCommitPersister } from "../src/group-commit";
 import { PostgresPersister } from "../src/postgres";
 
 /**
@@ -185,6 +186,26 @@ describe.skipIf(!url)("PostgresPersister", () => {
     expect(state.cseqs).toEqual({ "user_a~tab00001": 1 });
   });
 
+  it("writes several boards in one transaction, all or nothing", async () => {
+    const [b1, b2] = [board(), board()];
+    await db.write(b1, { entries: [entry(1)], cseqs: { "user_a~tab00001": 1 } });
+    // b1's seq 1 again violates the primary key, so b2's batch must not land either.
+    await expect(
+      db.writeMany([
+        { boardId: b2, batch: { entries: [entry(1)], cseqs: { "user_a~tab00001": 1 } } },
+        { boardId: b1, batch: { entries: [entry(1, 9)], cseqs: { "user_a~tab00001": 9 } } },
+      ]),
+    ).rejects.toThrow();
+    expect(await db.load(b2)).toEqual({ entries: [], cseqs: {} });
+
+    await db.writeMany([
+      { boardId: b1, batch: { entries: [entry(2)], cseqs: { "user_a~tab00001": 2 } } },
+      { boardId: b2, batch: { entries: [entry(1)], cseqs: { "user_a~tab00001": 1 } } },
+    ]);
+    expect((await db.load(b1)).entries.map((e) => e.seq)).toEqual([1, 2]);
+    expect((await db.load(b2)).entries.map((e) => e.seq)).toEqual([1]);
+  });
+
   it("keeps the snapshot's head timestamp, so a restarted room can check a client's lastSeq", async () => {
     const b = board();
     const headTs = op(2).ts;
@@ -205,29 +226,35 @@ describe.skipIf(!url)("PostgresPersister", () => {
 });
 
 describe.skipIf(!url)("sync server on Postgres", () => {
-  it("edits survive a server restart and a fresh client loads them", async () => {
+  it("edits on several boards survive a server restart (through group commit)", async () => {
     const { startSyncServer } = await import("../src/server");
     const { keyPair, signToken, TestClient, waitFor } = await import("./helpers");
     const { readLayer } = await import("@boardbuddy/sync-core");
     const { privateKey, publicKey } = await keyPair();
     const boardId = `pgboard_${Date.now()}`;
+    const otherBoard = `${boardId}_other`;
 
     const start = async () => {
-      const db = new PostgresPersister(url!);
+      const db = new GroupCommitPersister(new PostgresPersister(url!));
       const server = await startSyncServer({ port: 0, host: "127.0.0.1", publicKey, persister: db, room: { flushMs: 10 } });
       return { db, server };
     };
-    const join = async (port: number, userId: string) => {
-      const c = new TestClient(`ws://127.0.0.1:${port}`, await signToken(privateKey, { userId, boardId }), userId);
+    const join = async (port: number, userId: string, board = boardId) => {
+      const c = new TestClient(`ws://127.0.0.1:${port}`, await signToken(privateKey, { userId, boardId: board }), userId);
       return c.connect();
     };
 
     let { db, server } = await start();
     const a = await join(server.port, "user_a");
-    for (let i = 0; i < 30; i++) a.sync.mutate((tx) => tx.create(`l${i}`, { x: i }));
+    const other = await join(server.port, "user_c", otherBoard);
+    for (let i = 0; i < 30; i++) {
+      a.sync.mutate((tx) => tx.create(`l${i}`, { x: i }));
+      other.sync.mutate((tx) => tx.create(`o${i}`, { x: i }));
+    }
     a.sync.mutate((tx) => tx.delete("l3"));
-    await waitFor(() => a.sync.pending.length === 0, 5_000, "all acked");
+    await waitFor(() => a.sync.pending.length === 0 && other.sync.pending.length === 0, 5_000, "all acked");
     await a.close();
+    await other.close();
     await server.close();
     await db.close();
 
@@ -236,7 +263,10 @@ describe.skipIf(!url)("sync server on Postgres", () => {
     await waitFor(() => readLayer(b.sync.replica.doc, "l29") !== undefined, 5_000, "state after restart");
     expect(readLayer(b.sync.replica.doc, "l3")).toBeUndefined();
     expect(readLayer(b.sync.replica.doc, "l7")).toEqual({ x: 7 });
+    const c = await join(server.port, "user_d", otherBoard);
+    await waitFor(() => readLayer(c.sync.replica.doc, "o29") !== undefined, 5_000, "other board after restart");
     await b.close();
+    await c.close();
     await server.close();
     await db.close();
   });

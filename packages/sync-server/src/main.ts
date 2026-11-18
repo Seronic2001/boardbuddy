@@ -1,4 +1,5 @@
 import { loadPublicKey } from "./auth";
+import { GroupCommitPersister } from "./group-commit";
 import { MemoryPersister, type Persister } from "./persister";
 import { PostgresPersister } from "./postgres";
 import { startSyncServer } from "./server";
@@ -12,9 +13,13 @@ if (!publicKeyPem) {
   process.exit(1);
 }
 
-const persister: Persister = process.env.DATABASE_URL
-  ? new PostgresPersister(process.env.DATABASE_URL)
-  : new MemoryPersister();
+// SYNC_GROUP_COMMIT=off gives one transaction per room flush (for benchmark comparisons).
+const postgres = process.env.DATABASE_URL ? new PostgresPersister(process.env.DATABASE_URL) : null;
+const persister: Persister = !postgres
+  ? new MemoryPersister()
+  : process.env.SYNC_GROUP_COMMIT === "off"
+    ? postgres
+    : new GroupCommitPersister(postgres);
 
 const server = await startSyncServer({
   port: Number(process.env.PORT ?? 8787),
@@ -23,7 +28,11 @@ const server = await startSyncServer({
   allowedOrigins: process.env.ALLOWED_ORIGINS?.split(",").map((o) => o.trim()),
   log,
 });
-log("listening", { port: server.port, storage: process.env.DATABASE_URL ? "postgres" : "memory" });
+log("listening", {
+  port: server.port,
+  storage: postgres ? "postgres" : "memory",
+  groupCommit: postgres !== null && persister !== postgres,
+});
 
 let stopping = false;
 async function shutdown(signal: string) {
