@@ -11,8 +11,9 @@
  * --neon-websocket connects to Neon through its serverless driver (WebSockets on port 443)
  * instead of plain Postgres on 5432, for networks that block outbound 5432.
  *
- * Safe to re-run: boards that already have BuddySync data are skipped. Migrate a board
- * before its flag points at BuddySync (SYNC_BACKEND_BOARDS); see lib/sync/migrate-liveblocks.ts.
+ * Safe to re-run: boards that already have BuddySync data are skipped. The app no longer
+ * talks to Liveblocks; this stays for boards that weren't moved before the switch. See
+ * lib/sync/migrate-liveblocks.ts.
  */
 import { Pool as NeonPool } from "@neondatabase/serverless";
 import { MemoryPersister, PostgresPersister } from "@boardbuddy/sync-server";

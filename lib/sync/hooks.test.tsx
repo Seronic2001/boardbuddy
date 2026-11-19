@@ -25,7 +25,6 @@ function fakeBackend() {
     return () => listeners.delete(l);
   };
   const backend: SyncBackend = {
-    kind: "buddysync",
     getStorage: () => storage,
     subscribeStorage: sub,
     mutate: (fn) =>

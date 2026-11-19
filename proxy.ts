@@ -3,7 +3,6 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 const isPublicRoute = createRouteMatcher([
   "/sign-in(.*)",
   "/sign-up(.*)",
-  "/api/liveblocks-auth(.*)",
   // Called by Clerk, authenticated by its webhook signature instead of a session.
   "/api/clerk-webhook(.*)",
   // Test-only pages and token route; they 404 unless E2E_TEST_AUTH=1 outside production.
