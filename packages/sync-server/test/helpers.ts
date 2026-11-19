@@ -69,6 +69,8 @@ export class TestClient {
   readonly others = new Map<string, PresenceEntry>();
   socket!: WebSocket;
   closeCode: number | null = null;
+  /** Ask for presence batches, as current browser clients do. Off = an older client. */
+  batchPresence = false;
 
   constructor(
     readonly url: string,
@@ -100,7 +102,10 @@ export class TestClient {
   }
 
   sendRaw(msg: TransportClientMessage | Record<string, unknown>): void {
-    const out = (msg as { t: string }).t === "hello" ? { ...msg, token: this.token, tab: this.tab } : msg;
+    const out =
+      (msg as { t: string }).t === "hello"
+        ? { ...msg, token: this.token, tab: this.tab, ...(this.batchPresence ? { batchPresence: true } : {}) }
+        : msg;
     if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(out));
   }
 
@@ -144,6 +149,12 @@ export class TestClient {
         if (e) this.others.set(msg.id, { ...e, data: { ...e.data, ...msg.data } });
         break;
       }
+      case "presence-batch":
+        for (const { id, data } of msg.updates) {
+          const e = id === this.key ? undefined : this.others.get(id);
+          if (e) this.others.set(id, { ...e, data: { ...e.data, ...data } });
+        }
+        break;
       case "presence-leave":
         this.others.delete(msg.id);
         break;

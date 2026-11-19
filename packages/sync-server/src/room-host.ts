@@ -21,6 +21,10 @@ export interface Session {
   readonly key: string;
   claims: RoomClaims;
   send(msg: TransportServerMessage): void;
+  /** Sends an already serialized message, so one JSON string can go to many sessions. */
+  sendText(text: string): void;
+  /** Understands `presence-batch` (see sync-core protocol.ts). */
+  batchPresence: boolean;
   close(code: number, reason: string): void;
 }
 
@@ -39,9 +43,8 @@ export type RoomHostOptions = {
 
 type PresenceSlot = {
   entry: PresenceEntry;
+  /** Changes not yet broadcast. */
   outgoing: Record<string, unknown> | null;
-  lastSentAt: number;
-  timer: NodeJS.Timeout | null;
   removeTimer: NodeJS.Timeout | null;
 };
 
@@ -56,6 +59,9 @@ export class RoomHost {
   readonly room: Room;
   private readonly sessions = new Map<string, Session>();
   private readonly presence = new Map<string, PresenceSlot>();
+  private readonly dirtyPresence = new Set<string>();
+  private presenceTimer: NodeJS.Timeout | null = null;
+  private lastPresenceAt = 0;
   private readonly flushTimer: NodeJS.Timeout;
   private idleTimer: NodeJS.Timeout | null = null;
   private writing: Promise<void> | null = null;
@@ -129,7 +135,7 @@ export class RoomHost {
         user: picture ? { userId, name, picture } : { userId, name },
         data: {},
       };
-      this.presence.set(session.key, { entry, outgoing: null, lastSentAt: 0, timer: null, removeTimer: null });
+      this.presence.set(session.key, { entry, outgoing: null, removeTimer: null });
       this.broadcast({ t: "presence-join", entry }, session.key);
     }
   }
@@ -146,7 +152,6 @@ export class RoomHost {
     const slot = this.presence.get(session.key);
     if (slot) {
       const remove = () => {
-        if (slot.timer) clearTimeout(slot.timer);
         this.presence.delete(session.key);
         this.broadcast({ t: "presence-leave", id: session.key });
       };
@@ -212,8 +217,8 @@ export class RoomHost {
     this.disposed = true;
     clearInterval(this.flushTimer);
     this.clearIdleTimer();
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
     for (const slot of this.presence.values()) {
-      if (slot.timer) clearTimeout(slot.timer);
       if (slot.removeTimer) clearTimeout(slot.removeTimer);
     }
     try {
@@ -304,30 +309,60 @@ export class RoomHost {
     if (!slot) return;
     slot.entry = { ...slot.entry, data: { ...slot.entry.data, ...patch } };
     slot.outgoing = { ...slot.outgoing, ...patch };
-    // Throttle per user: at most one broadcast per interval; the trailing update always goes out.
-    if (slot.timer) return;
-    const wait = slot.lastSentAt + this.opts.presenceIntervalMs - this.opts.now();
+    this.dirtyPresence.add(key);
+    // Throttle per room: at most one presence broadcast per interval, carrying every change
+    // since the last one. The trailing change always goes out.
+    if (this.presenceTimer) return;
+    const wait = this.lastPresenceAt + this.opts.presenceIntervalMs - this.opts.now();
     if (wait <= 0) {
-      this.sendPresence(key, slot);
+      this.sendPresence();
     } else {
-      slot.timer = setTimeout(() => {
-        slot.timer = null;
-        this.sendPresence(key, slot);
+      this.presenceTimer = setTimeout(() => {
+        this.presenceTimer = null;
+        this.sendPresence();
       }, wait);
-      slot.timer.unref();
+      this.presenceTimer.unref();
     }
   }
 
-  private sendPresence(key: string, slot: PresenceSlot): void {
-    if (!slot.outgoing || !this.presence.has(key)) return;
-    const data = slot.outgoing;
-    slot.outgoing = null;
-    slot.lastSentAt = this.opts.now();
-    this.broadcast({ t: "presence", id: key, data }, key);
+  /**
+   * One serialized batch for every client that understands it (each skips its own entry),
+   * instead of one message per change per recipient: socket writes were the server's
+   * biggest CPU cost under load. Older clients get the per-change messages they expect.
+   */
+  private sendPresence(): void {
+    const updates: { id: string; data: PresenceData }[] = [];
+    for (const key of this.dirtyPresence) {
+      const slot = this.presence.get(key);
+      if (slot?.outgoing) updates.push({ id: key, data: slot.outgoing });
+      if (slot) slot.outgoing = null;
+    }
+    this.dirtyPresence.clear();
+    if (updates.length === 0) return;
+    this.lastPresenceAt = this.opts.now();
+
+    let batch: string | null = null;
+    let single: Map<string, string> | null = null;
+    for (const [key, s] of this.sessions) {
+      if (s.batchPresence) {
+        batch ??= JSON.stringify({ t: "presence-batch", updates } satisfies TransportServerMessage);
+        s.sendText(batch);
+      } else {
+        single ??= new Map(
+          updates.map((u) => [u.id, JSON.stringify({ t: "presence", ...u } satisfies TransportServerMessage)]),
+        );
+        for (const [id, text] of single) if (id !== key) s.sendText(text);
+      }
+    }
   }
 
   private broadcast(msg: TransportServerMessage, exceptKey?: string): void {
-    for (const [key, s] of this.sessions) if (key !== exceptKey) s.send(msg);
+    let text: string | null = null;
+    for (const [key, s] of this.sessions) {
+      if (key === exceptKey) continue;
+      text ??= JSON.stringify(msg);
+      s.sendText(text);
+    }
   }
 
   private armIdleTimer(): void {

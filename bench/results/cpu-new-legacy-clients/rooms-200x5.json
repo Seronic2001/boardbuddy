@@ -1,0 +1,64 @@
+{
+  "label": "cpu-new-legacy-clients-200x5",
+  "at": "2026-11-18T14:17:41.428Z",
+  "config": {
+    "legacyPresence": true,
+    "rooms": 200,
+    "clientsPerRoom": 5,
+    "cursorHz": 30,
+    "editHz": 2,
+    "durationSec": 30,
+    "workers": 4
+  },
+  "connected": 1000,
+  "failed": 0,
+  "latencyMs": {
+    "cursor": {
+      "p50": 59.1,
+      "p95": 175.10000000000002,
+      "p99": 202.10000000000002,
+      "max": 300.339111328125,
+      "mean": 72.90753782437477,
+      "n": 817674
+    },
+    "edit": {
+      "p50": 127.80000000000001,
+      "p95": 217.9,
+      "p99": 246.20000000000002,
+      "max": 349.19970703125,
+      "mean": 127.67944516569293,
+      "n": 246936
+    },
+    "ack": {
+      "p50": 127.60000000000001,
+      "p95": 217.60000000000002,
+      "p99": 246,
+      "max": 348.83984375,
+      "mean": 127.50819428857578,
+      "n": 61734
+    }
+  },
+  "perSecond": {
+    "delivered": 36092.16785039422,
+    "cursors": 30162.73538802372,
+    "edits": 2011.109663126344
+  },
+  "bytesPerClientPerSecond": {
+    "down": 6127.796833257315,
+    "up": 3701.0715123476903
+  },
+  "server": {
+    "cpuCores": 1.0048869485893008,
+    "rssBefore": 221343744,
+    "rssPeak": 270712832,
+    "heapBefore": 46419128,
+    "heapPeak": 120317824
+  },
+  "generator": {
+    "busiestThreadUtilization": 0.3822425797020687
+  },
+  "problems": {
+    "unexpectedCloses": 0,
+    "serverErrors": 0
+  }
+}

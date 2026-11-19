@@ -102,7 +102,10 @@ export async function startSyncServer(options: SyncServerOptions): Promise<SyncS
   const http: Server = createServer((req, res) => {
     if (req.url === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, rooms: rooms.size, connections }));
+      const { rss, heapUsed } = process.memoryUsage();
+      const { user, system } = process.cpuUsage();
+      // Memory and CPU time let a load test see per-room cost and CPU use from outside.
+      res.end(JSON.stringify({ ok: true, rooms: rooms.size, connections, rss, heapUsed, cpuMicros: user + system }));
       return;
     }
     if (req.url === "/admin/revoke" && req.method === "POST") {
@@ -197,9 +200,10 @@ function handleConnection(
   // Messages are handled strictly in order, even across the async auth and room load.
   let chain: Promise<void> = Promise.resolve();
 
-  const send = (msg: TransportServerMessage) => {
-    if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
+  const sendText = (text: string) => {
+    if (socket.readyState === socket.OPEN) socket.send(text);
   };
+  const send = (msg: TransportServerMessage) => sendText(JSON.stringify(msg));
   const fatal = (code: FatalCode, closeCode: number, message: string) => {
     send({ t: "fatal", code, message });
     socket.close(closeCode, message);
@@ -265,6 +269,8 @@ function handleConnection(
         claims,
         host,
         send,
+        sendText,
+        batchPresence: msg.batchPresence === true,
         close: (code, reason) => socket.close(code, reason),
       };
       armExpiry(claims);

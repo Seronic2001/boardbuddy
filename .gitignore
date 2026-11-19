@@ -49,3 +49,7 @@ packages/sync-server/dist/
 
 # Vercel CLI project link
 .vercel
+
+# load-test CPU profiles (large; regenerate with npm run bench:profile)
+bench/results/*.cpuprofile
+packages/sync-server/.bench-old/

@@ -17,7 +17,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs",
-    "start:dist": "node --enable-source-maps dist/main.mjs"
+    "start:dist": "node --enable-source-maps dist/main.mjs",
+    "bench:load": "tsx --env-file-if-exists=../../.env.local bench/load.ts",
+    "bench:profile": "tsx --env-file-if-exists=.env bench/profile-server.ts"
   },
   "dependencies": {
     "@boardbuddy/sync-core": "*",
@@ -31,6 +33,7 @@
     "@types/pg": "^8.15.0",
     "@types/ws": "^8.18.0",
     "esbuild": "^0.27.0",
+    "fast-check": "^4.10.3",
     "tsx": "^4.20.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

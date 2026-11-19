@@ -282,7 +282,8 @@ export class BuddySyncConnection {
       (msg) => {
         const socket = this.socket;
         if (!socket || socket.readyState !== socket.OPEN) return;
-        const out = msg.t === "hello" ? { ...msg, token: this.auth?.token, tab: this.tabId } : msg;
+        const out =
+          msg.t === "hello" ? { ...msg, token: this.auth?.token, tab: this.tabId, batchPresence: true } : msg;
         socket.send(JSON.stringify(out));
       },
       { onAck: () => this.scheduleSave() },
@@ -441,6 +442,14 @@ export class BuddySyncConnection {
         if (entry) this.setOthers((m) => m.set(msg.id, { ...entry, data: { ...entry.data, ...msg.data } }));
         break;
       }
+      case "presence-batch":
+        this.setOthers((m) => {
+          for (const { id, data } of msg.updates) {
+            const entry = id === this.selfKey ? undefined : m.get(id);
+            if (entry) m.set(id, { ...entry, data: { ...entry.data, ...data } });
+          }
+        });
+        break;
       case "presence-leave":
         this.setOthers((m) => m.delete(msg.id));
         break;
